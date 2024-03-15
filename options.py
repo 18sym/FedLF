@@ -27,22 +27,20 @@ def args_parser():
     # use iNaturalist
 
     # 通用设置：
-    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg'],
+    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
     parser.add_argument('--num_clients', type=int, default=20)
-    parser.add_argument('--num_rounds', type=int, default=200)
+    parser.add_argument('--num_rounds', type=int, default=200,help='全局迭代次数')
     parser.add_argument('--num_channels', type=int, default=3, help="number of channels of imges")
+    parser.add_argument('--num_epochs_local_training', type=int, default=10)  #
+    parser.add_argument('--batch_size_local_training', type=int, default=32)
 
     # CREFF
     parser.add_argument('--path_cifar10', type=str, default=os.path.join(path_dir, 'data/CIFAR10/'))
     parser.add_argument('--path_cifar100', type=str, default=os.path.join(path_dir, 'data/CIFAR100/'))
     parser.add_argument('--num_classes', type=int, default=10)
-
     parser.add_argument('--num_online_clients', type=int, default=8)
-
-    parser.add_argument('--num_epochs_local_training', type=int, default=10)  #
-    parser.add_argument('--batch_size_local_training', type=int, default=32)
     parser.add_argument('--match_epoch', type=int, default=100)
     parser.add_argument('--crt_epoch', type=int, default=300)
     parser.add_argument('--batch_real', type=int, default=32)
@@ -61,13 +59,6 @@ def args_parser():
     parser.add_argument('--method', type=str, default='DSA', help='DC/DSA')
     parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate',
                         help='differentiable Siamese augmentation strategy')
-
-
-
-
-    #Fedavg
-    parser.add_argument('--frac', type=float, default=1.0, help='client of frac')
-    parser.add_argument('--momentum', type=float,default=0.0, help='momentum of SGD')
     # FedProx
     parser.add_argument('--mu', type=float, default=0.01)
     # FedAvgM

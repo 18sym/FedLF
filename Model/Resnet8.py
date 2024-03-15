@@ -222,7 +222,7 @@ class ResNet_cifar(ResNetBase):
         group_norm_num_groups=None,
         freeze_bn=False,
         freeze_bn_affine=False,
-        num_classes=100  # 默认值为100，但在实例化模型时可以修改
+        num_classes=10  #
     ):
         super(ResNet_cifar, self).__init__()
         self.freeze_bn = freeze_bn
@@ -275,7 +275,8 @@ class ResNet_cifar(ResNetBase):
         self.avgpool = nn.AvgPool2d(kernel_size=8)
         self.classifier = nn.Linear(
             in_features=int(64 * scaling * block_fn.expansion),
-            out_features=self.num_classes,  # 根据num_classes确定输出大小
+            out_features= 10  # 根据num_classes确定输出大小
+        # fedprox 更改为1了，原本输出特征应该是10
         )
 
         # weight initialization based on layer type.

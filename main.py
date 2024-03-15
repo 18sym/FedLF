@@ -59,8 +59,6 @@ import time
 from Dataset.param_aug import DiffAugment
 # 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
 
-from algorithm.fedavg import Fedavg
-
 
 class Global(object):
     def __init__(self,
@@ -110,7 +108,8 @@ class Global(object):
                                       freeze_bn=False, freeze_bn_affine=False, num_classes=args.num_classes).to(device)
 
         # 创建一个线性层（全连接层），用于从合成特征中进行分类，输出类别数为10，模型移动到指定设备
-        self.feature_net = nn.Linear(256, 100).to(args.device)
+        self.feature_net = nn.Linear(256, 10).to(args.device)
+        #
 
     def update_feature_syn(self, args, global_params, list_clients_gradient):
         # 获取网络参数
@@ -163,6 +162,8 @@ class Global(object):
                     gw_real_temp.append(value_global_param)
                 gw_real_avg[i] = gw_real_temp
 
+        """
+        # 只有在creff的时候才需要此段代码，进行更新联邦特征
         # update the federated features.
         # 更新联邦特征
         for ep in range(args.match_epoch):
@@ -182,7 +183,7 @@ class Global(object):
             self.optimizer_feature.zero_grad()
             loss_feature.backward()
             self.optimizer_feature.step()
-
+        """
     def feature_re_train(self, fedavg_params, batch_size_local_training):
         # 深度复制特征和程和标签合成
         feature_syn_train_ft = copy.deepcopy(self.feature_syn.detach())
@@ -190,7 +191,7 @@ class Global(object):
         # 构建特征-标签训练数据集
         dst_train_syn_ft = TensorDataset(feature_syn_train_ft, label_syn_train_ft)
         # 构建线性模型
-        ft_model = nn.Linear(256, 100).to(args.device)
+        ft_model = nn.Linear(256, 10).to(args.device)
         # 创建优化器
         optimizer_ft_net = SGD(ft_model.parameters(), lr=args.lr_net)  # optimizer_img for synthetic data
         ft_model.train()
@@ -222,14 +223,18 @@ class Global(object):
     def initialize_for_model_fusion(self, list_dicts_local_params: list, list_nums_local_data: list):
         # 初始化fedavg全局参数
         fedavg_global_params = copy.deepcopy(list_dicts_local_params[0])
+        # 对于第一个客户端的本地模型参数中的每个参数，进行迭代
         for name_param in list_dicts_local_params[0]:
             list_values_param = []
             # 计算全局参数
             for dict_local_params, num_local_data in zip(list_dicts_local_params, list_nums_local_data):
                 list_values_param.append(dict_local_params[name_param] * num_local_data)
+                # 将当前参数在当前客户端的值乘以该客户端的数据量，并将结果添加到 list_values_param 列表中。
             value_global_param = sum(list_values_param) / sum(list_nums_local_data)
+            # 计算所有客户端中当前参数的平均值，这是通过将所有客户端中的参数值总和除以所有客户端的数据量总和来实现的。
             fedavg_global_params[name_param] = value_global_param
-        return fedavg_global_params
+            # 将全局参数中当前参数的值设置为上一步计算的全局平均值
+        return fedavg_global_params  # 返回计算得到的全局参数，这些参数已经是所有客户端模型参数的平均值。
 
     def global_eval(self, fedavg_params, data_test, batch_size_test):
         # 加载FedAVG参数到合成模型
@@ -344,29 +349,86 @@ class Local(object):
 
     def local_train(self, args, global_params):
         # 本地训练函数
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip()])
+        transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
+            transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
+            transforms.RandomHorizontalFlip()])  # 随机水平翻转
 
         # 加载全局参数到本地模型
-        self.local_model.load_state_dict(global_params)
-        self.local_model.train()
+        self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
+        self.local_model.train()  # 将本地模型设置为训练模式
 
         # 训练若干周期
-        for _ in range(args.num_epochs_local_training):
-            data_loader = DataLoader(dataset=self.data_client,
-                                     batch_size=args.batch_size_local_training,
-                                     shuffle=True)
-            for data_batch in data_loader:
-                images, labels = data_batch
+        for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
+            # 创建数据加载器，用于加载本地客户端的数据批次
+            data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
+                                     batch_size=args.batch_size_local_training,  # 批次大小为输入大小
+                                     shuffle=True)  # 打乱顺序以增加随机性
+            for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
+                images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
                 images = transform_train(images)
-                _, outputs = self.local_model(images)
+                _, outputs = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
+                # 计算loss
                 loss = self.criterion(outputs, labels)
+                # print(loss.item())
+                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                 self.optimizer.zero_grad()
+                # 反向传播：计算损失函数关于模型参数的梯度
                 loss.backward()
+                # 根据梯度更新模型参数，执行一步优化
                 self.optimizer.step()
+
         return self.local_model.state_dict()
+
+    def local_train_prox(self, args, global_params):
+        # 本地训练函数
+        transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
+            transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
+            transforms.RandomHorizontalFlip()])  # 随机水平翻转
+        """
+        local_model = self.local_model
+        local_model.train()  # 将本地模型设置为训练模式
+        local_param = local_model.state_dict()
+        """
+        # 加载全局参数到本地模型
+        self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
+        self.local_model.train()  # 将本地模型设置为训练模式
+        local_param = self.local_model.state_dict()
+        # 训练若干周期
+        for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
+            # 创建数据加载器，用于加载本地客户端的数据批次
+            data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
+                                     batch_size=args.batch_size_local_training,  # 批次大小为输入大小
+                                     shuffle=True)  # 打乱顺序以增加随机性
+            for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
+                images, labels = data_batch  # 获取批次中的图像和标签数据
+                images, labels = images.to(self.device), labels.to(self.device)
+                # print(labels.size())
+                images = transform_train(images)
+                # print(labels.size())
+                _, outputs = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
+                # print(outputs.size())
+                # outputs = outputs.squeeze()
+                # print(outputs.size())
+
+                # 计算proximal_term
+                proximal_term = 0.0
+                for w, w_t in zip(local_param.values(), global_params.values()):
+                    # 确保全局参数与本地模型参数的形状匹配
+                    proximal_term += (w.float() - w_t.float()).norm(2)
+                    # print(proximal_term)
+
+                loss = self.criterion(outputs, labels) + (args.mu / 2) * proximal_term
+                # print(loss.item())
+                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
+                self.optimizer.zero_grad()
+                # 反向传播：计算损失函数关于模型参数的梯度
+                loss.backward()
+                # 根据梯度更新模型参数，执行一步优化
+                self.optimizer.step()
+
+        return self.local_model.state_dict()
+
 
 def CReFF():
     args = args_parser()
@@ -418,43 +480,75 @@ def CReFF():
     # 根据给定的参数生成客户端的数据索引
     list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
                                           args.num_clients, args.non_iid_alpha, args.seed)
-    # 展示每个客户端的数据分布情况，并返回原始的数据字典
+    # 展示每个客户端的数据分布情况
     original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
                                                               args.num_classes)
-    # 全局模型的初始化
+    # 全局模型的初始化,其中包括类别数、设备、参数等等
     global_model = Global(num_classes=args.num_classes,
                           device=args.device,
                           args=args,
                           num_of_feature=args.num_of_feature)
-    total_clients = list(range(args.num_clients))
+    # 创建一个包含所有客户端索引的列表
+    total_clients = list(range(args.num_clients))  #
+    # 初始化一个“indices2data”，用于将客户端索引映射到数据集
     indices2data = Indices2Dataset(data_local_training)
     re_trained_acc = []
-    temp_model = nn.Linear(256, 100).to(args.device)
+    # 初始化空列表，用于存储重新训练后的准确率
+
+    # 选择一个临时线性模型，用于申城特征和程参数
+    temp_model = nn.Linear(256, 10).to(args.device)
     syn_params = temp_model.state_dict()
+    # 这个方法会获得一个字典，包含了模型中所有可学习的参数的名称以及对应的张量值。这个字典通常用于保存模型参数或者在模型中传递参数
+
+
     # 迭代训练
     for r in tqdm(range(1, args.num_rounds + 1), desc='server-training'):
+        """
+            作用：遍历从1到args.num_rounds的整数序列，并在每次迭代之前显示一个描述为”server-training“的进度条
+            for r in ...: 这是一个 for 循环，它会遍历一个迭代器中的每个元素。循环中的变量 r 用来迭代迭代器中的元素。
+            tqdm(...): tqdm 是一个 Python 库，用于在循环中显示进度条，使得长时间运行的循环更具可视化效果。
+            range(1, args.num_rounds + 1): 这部分定义了迭代器，它会生成从 1 到 args.num_rounds（包括 args.num_rounds）的整数序列
+            desc='server-training': 这个参数设置了进度条的描述文本，显示在进度条前面，用于指示当前循环的目的或阶段。
+        """
+        # 下载全局参数，global_params为一个字典
         global_params = global_model.download_params()
+        # 使用的deepcopy的方法，为了在后续的修改当中，可以安全的对这个修改，而不会影响到原始的global_params
         syn_feature_params = copy.deepcopy(global_params)
+
         for name_param in reversed(syn_feature_params):
+            # 采用了reversed方法，逆序遍历，从而确保在在修改参数的时候不会对后面的参数造成影响
             if name_param == 'classifier.bias':
+                # 如果参数名是：classifier.bias，则修改成syn_params['bias'] 中的值
                 syn_feature_params[name_param] = syn_params['bias']
             if name_param == 'classifier.weight':
+                # 如果参数名是分类器的权重，则修改成syn_params['weight']中的值
                 syn_feature_params[name_param] = syn_params['weight']
                 break
+
         online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
-        list_clients_gradient = []
-        list_dicts_local_params = []
-        list_nums_local_data = []
+        # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
+        # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
+
+        list_clients_gradient = []  # 存储客户端的梯度信息
+        list_dicts_local_params = []  # 存储每个客户端的本地参数信息
+        list_nums_local_data = []   # 存储每个客户端的本地数量信息
         # local training
         for client in online_clients:
             indices2data.load(list_client2indices[client])
+            # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
             data_client = indices2data
+            # 把这个赋值给data_client 包含特定样本索引的 数据集对象。方便以后操作，不会对原数据造成损坏
             list_nums_local_data.append(len(data_client))
+            # 用于记录每个客户端的本地数据集的大小
+
             local_model = Local(data_client=data_client,
                                 class_list=original_dict_per_client[client])
+            # local_model 初始化成为了一个local对象，里面有我们预先设定好的初始值，包括优化器，网络什么的
+
             # compute the real feature gradients in local data
             truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
             list_clients_gradient.append(copy.deepcopy(truth_gradient))
+
             # local update
             local_params = local_model.local_train(args, copy.deepcopy(global_params))
             list_dicts_local_params.append(copy.deepcopy(local_params))
@@ -473,6 +567,305 @@ def CReFF():
     print(re_trained_acc)
 
 
+
+def Fedavg():
+    args = args_parser()
+    print(
+        'imb_factor:{ib}, non_iid:{non_iid}\n'
+        'lr_local_training:{lr_local_training}\n'
+        'num_rounds:{num_rounds},num_epochs_local_training:{num_epochs_local_training},batch_size_local_training:{batch_size_local_training}\n'
+        'num_online_clients:{num_online_clients}\n'.format(
+            ib=args.imb_factor,
+            non_iid=args.non_iid_alpha,
+            lr_local_training=args.lr_local_training,
+            num_rounds=args.num_rounds,
+            num_epochs_local_training=args.num_epochs_local_training,
+            batch_size_local_training=args.batch_size_local_training,
+            num_online_clients=args.num_online_clients))
+
+    random_state = np.random.RandomState(args.seed)
+
+    # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
+    transform_all = transforms.Compose([
+        transforms.ToTensor(),  # 将图片转为张量
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])  # 对图像进行归一化处理
+    # 根据命令行参数加载数据集
+    if args.dataset == 'cifar10':
+        data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
+        data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
+    elif args.dataset == 'cifar100':
+        data_local_training = datasets.CIFAR100(args.path_cifar100, train=True, download=True, transform=transform_all)
+        data_global_test = datasets.CIFAR100(args.path_cifar100, train=False, transform=transform_all)
+    else:
+        raise ValueError("Unknown dataset:", args.dataset)
+
+    """
+    transform_all = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
+    data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
+    """
+    # Distribute data 分类数据
+    # 对数据进行分组，按照类别对数据进行分类 这里用到了dataset里面的函数
+    list_label2indices = classify_label(data_local_training, args.num_classes)
+    # heterogeneous and long_tailed setting
+
+    # 对数据进行异构和长尾设置
+    # 注意：下面的下面的train_long_tail和clients_indices函数需要根据上下文中的实际定义进行解释，因为这些函数在提供的代码中未定义
+    _, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
+                                                      args.imb_factor, args.imb_type)
+    # 根据给定的参数生成客户端的数据索引
+    list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
+                                          args.num_clients, args.non_iid_alpha, args.seed)
+    # 展示每个客户端的数据分布情况，并返回原始的数据字典
+    original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
+                                                              args.num_classes)
+    # 全局模型的初始化,其中包括类别数、设备、参数等等
+    global_model = Global(num_classes=args.num_classes,
+                          device=args.device,
+                          args=args,
+                          num_of_feature=args.num_of_feature)
+    # 创建一个包含所有客户端索引的列表
+    total_clients = list(range(args.num_clients))  #
+    # 初始化一个“indices2data”，用于将客户端索引映射到数据集
+    indices2data = Indices2Dataset(data_local_training)
+    re_trained_acc = []
+    # 初始化空列表，用于存储重新训练后的准确率
+
+    # 选择一个临时线性模型，用于申城特征和程参数
+    temp_model = nn.Linear(256, 10).to(args.device)
+    syn_params = temp_model.state_dict()
+    # 这个方法会获得一个字典，包含了模型中所有可学习的参数的名称以及对应的张量值。这个字典通常用于保存模型参数或者在模型中传递参数
+
+    # 迭代训练
+    for r in tqdm(range(1, args.num_rounds + 1), desc='server-training'):
+        """
+            作用：遍历从1到args.num_rounds的整数序列，并在每次迭代之前显示一个描述为”server-training“的进度条
+            for r in ...: 这是一个 for 循环，它会遍历一个迭代器中的每个元素。循环中的变量 r 用来迭代迭代器中的元素。
+            tqdm(...): tqdm 是一个 Python 库，用于在循环中显示进度条，使得长时间运行的循环更具可视化效果。
+            range(1, args.num_rounds + 1): 这部分定义了迭代器，它会生成从 1 到 args.num_rounds（包括 args.num_rounds）的整数序列
+            desc='server-training': 这个参数设置了进度条的描述文本，显示在进度条前面，用于指示当前循环的目的或阶段。
+        """
+        # 下载全局参数，global_params为一个字典
+        global_params = global_model.download_params()
+
+        # 使用的deepcopy的方法，为了在后续的修改当中，可以安全的对这个修改，而不会影响到原始的global_params
+        syn_feature_params = copy.deepcopy(global_params)
+
+        for name_param in reversed(syn_feature_params):
+            # 采用了reversed方法，逆序遍历，从而确保在在修改参数的时候不会对后面的参数造成影响
+            if name_param == 'classifier.bias':
+                # 如果参数名是：classifier.bias，则修改成syn_params['bias'] 中的值
+                syn_feature_params[name_param] = syn_params['bias']
+            if name_param == 'classifier.weight':
+                # 如果参数名是分类器的权重，则修改成syn_params['weight']中的值
+                syn_feature_params[name_param] = syn_params['weight']
+                break
+
+        online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
+        # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
+        # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
+
+        list_clients_gradient = []  # 存储客户端的梯度信息
+        list_dicts_local_params = []  # 存储每个客户端的本地参数信息
+        list_nums_local_data = []  # 存储每个客户端的本地数量信息
+        # local training
+        for client in online_clients:
+            indices2data.load(list_client2indices[client])
+            # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
+            data_client = indices2data
+            # 把这个赋值给data_client 包含特定样本索引的 数据集对象。方便以后操作，不会对原数据造成损坏
+            list_nums_local_data.append(len(data_client))
+            # 用于记录每个客户端的本地数据集的大小
+
+            local_model = Local(data_client=data_client,
+                                class_list=original_dict_per_client[client])
+            # local_model 初始化成为了一个local对象，里面有我们预先设定好的初始值，包括优化器，网络什么的
+            """
+            # compute the real feature gradients in local data
+            truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
+            list_clients_gradient.append(copy.deepcopy(truth_gradient))
+            """
+
+            # local update 注意这里更新只用了一部，其余在local里面
+            local_params = local_model.local_train(args, copy.deepcopy(global_params))
+            # print(local_params)
+
+            # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
+            list_dicts_local_params.append(copy.deepcopy(local_params))
+            # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
+
+        # aggregating local models with FedAvg
+        fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
+
+        global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
+        """
+        # re-trained classifier
+        syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
+                                                              args.batch_size_local_training)
+        """
+        # global eval
+        one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
+        re_trained_acc.append(one_re_train_acc)
+        global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
+        if r % 10 == 0:
+            print(re_trained_acc)
+    print(re_trained_acc)
+
+def FedProx():
+    # 只需要在Local Model里面的local_train 加入一个近端项就可以了 options里面的加的是  mu
+    args = args_parser()
+    print(
+        'imb_factor:{ib}, non_iid:{non_iid}\n'
+        'lr_local_training:{lr_local_training}, mu:{mu}\n'
+        'num_rounds:{num_rounds}, num_epochs_local_training:{num_epochs_local_training}, batch_size_local_training:{batch_size_local_training}\n'
+        'num_online_clients:{num_online_clients}\n'.format(
+            ib=args.imb_factor,
+            non_iid=args.non_iid_alpha,
+            lr_local_training=args.lr_local_training,
+            mu=args.mu,
+            num_rounds=args.num_rounds,
+            num_epochs_local_training=args.num_epochs_local_training,
+            batch_size_local_training=args.batch_size_local_training,
+            num_online_clients=args.num_online_clients))
+
+    random_state = np.random.RandomState(args.seed)
+
+    # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
+    transform_all = transforms.Compose([
+        transforms.ToTensor(),  # 将图片转为张量
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])  # 对图像进行归一化处理
+    # 根据命令行参数加载数据集
+    if args.dataset == 'cifar10':
+        data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
+        data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
+    elif args.dataset == 'cifar100':
+        data_local_training = datasets.CIFAR100(args.path_cifar100, train=True, download=True, transform=transform_all)
+        data_global_test = datasets.CIFAR100(args.path_cifar100, train=False, transform=transform_all)
+    else:
+        raise ValueError("Unknown dataset:", args.dataset)
+
+    """
+    transform_all = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
+    data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
+    """
+    # Distribute data 分类数据
+    # 对数据进行分组，按照类别对数据进行分类 这里用到了dataset里面的函数
+    list_label2indices = classify_label(data_local_training, args.num_classes)
+    # heterogeneous and long_tailed setting
+
+    # 对数据进行异构和长尾设置
+    # 注意：下面的下面的train_long_tail和clients_indices函数需要根据上下文中的实际定义进行解释，因为这些函数在提供的代码中未定义
+    _, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
+                                                      args.imb_factor, args.imb_type)
+    # 根据给定的参数生成客户端的数据索引
+    list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
+                                          args.num_clients, args.non_iid_alpha, args.seed)
+    # 展示每个客户端的数据分布情况，并返回原始的数据字典
+    original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
+                                                              args.num_classes)
+    # 全局模型的初始化,其中包括类别数、设备、参数等等
+    global_model = Global(num_classes=args.num_classes,
+                          device=args.device,
+                          args=args,
+                          num_of_feature=args.num_of_feature)
+    # 创建一个包含所有客户端索引的列表
+    total_clients = list(range(args.num_clients))  #
+    # 初始化一个“indices2data”，用于将客户端索引映射到数据集
+    indices2data = Indices2Dataset(data_local_training)
+    re_trained_acc = []
+    # 初始化空列表，用于存储重新训练后的准确率
+
+    # 选择一个临时线性模型，用于申城特征和程参数
+    temp_model = nn.Linear(256, 10).to(args.device)
+    syn_params = temp_model.state_dict()
+    # 这个方法会获得一个字典，包含了模型中所有可学习的参数的名称以及对应的张量值。这个字典通常用于保存模型参数或者在模型中传递参数
+
+    # 迭代训练
+    for r in tqdm(range(1, args.num_rounds + 1), desc='server-training'):
+        """
+            作用：遍历从1到args.num_rounds的整数序列，并在每次迭代之前显示一个描述为”server-training“的进度条
+            for r in ...: 这是一个 for 循环，它会遍历一个迭代器中的每个元素。循环中的变量 r 用来迭代迭代器中的元素。
+            tqdm(...): tqdm 是一个 Python 库，用于在循环中显示进度条，使得长时间运行的循环更具可视化效果。
+            range(1, args.num_rounds + 1): 这部分定义了迭代器，它会生成从 1 到 args.num_rounds（包括 args.num_rounds）的整数序列
+            desc='server-training': 这个参数设置了进度条的描述文本，显示在进度条前面，用于指示当前循环的目的或阶段。
+        """
+        # 下载全局参数，global_params为一个字典
+        global_params = global_model.download_params()
+
+        # 使用的deepcopy的方法，为了在后续的修改当中，可以安全的对这个修改，而不会影响到原始的global_params
+        syn_feature_params = copy.deepcopy(global_params)
+
+        for name_param in reversed(syn_feature_params):
+            # 采用了reversed方法，逆序遍历，从而确保在在修改参数的时候不会对后面的参数造成影响
+            if name_param == 'classifier.bias':
+                # 如果参数名是：classifier.bias，则修改成syn_params['bias'] 中的值
+                syn_feature_params[name_param] = syn_params['bias']
+            if name_param == 'classifier.weight':
+                # 如果参数名是分类器的权重，则修改成syn_params['weight']中的值
+                syn_feature_params[name_param] = syn_params['weight']
+                break
+
+        online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
+        # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
+        # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
+
+        list_clients_gradient = []  # 存储客户端的梯度信息
+        list_dicts_local_params = []  # 存储每个客户端的本地参数信息
+        list_nums_local_data = []  # 存储每个客户端的本地数量信息
+        # local training
+        for client in online_clients:
+            indices2data.load(list_client2indices[client])
+            # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
+            data_client = indices2data
+            # 把这个赋值给data_client 包含特定样本索引的 数据集对象。方便以后操作，不会对原数据造成损坏
+            list_nums_local_data.append(len(data_client))
+            # 用于记录每个客户端的本地数据集的大小
+
+            local_model = Local(data_client=data_client,
+                                class_list=original_dict_per_client[client])
+            # local_model 初始化成为了一个local对象，里面有我们预先设定好的初始值，包括优化器，网络什么的
+            """
+            # compute the real feature gradients in local data
+            truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
+            list_clients_gradient.append(copy.deepcopy(truth_gradient))
+            """
+
+            # local update 注意这里更新只用了一部，其余在local里面
+            # 确保全局参数与本地模型参数的形状匹配
+            local_params = local_model.local_train_prox(args, copy.deepcopy(global_params))
+            # print(local_params)
+
+            # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
+            list_dicts_local_params.append(copy.deepcopy(local_params))
+            # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
+
+        # aggregating local models with FedAvg
+        fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
+
+        global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
+        """
+        # re-trained classifier
+        syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
+                                                              args.batch_size_local_training)
+        """
+        # global eval
+        one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
+        re_trained_acc.append(one_re_train_acc)
+        global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
+        if r % 10 == 0:
+            print(re_trained_acc)
+    print(re_trained_acc)
+
+
 if __name__ == '__main__':
     torch.manual_seed(7)  # cpu
     torch.cuda.manual_seed(7)  # gpu
@@ -484,6 +877,8 @@ if __name__ == '__main__':
         CReFF()
     elif args.algorithm == 'fedavg':
         Fedavg()
+    elif args.algorithm == 'fedprox':
+        FedProx()
     else:
         raise ValueError("Unknow algoruithm:", args.algorithm)
 

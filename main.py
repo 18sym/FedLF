@@ -58,7 +58,7 @@ import time
 
 from Dataset.param_aug import DiffAugment
 # 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
-
+from algorithm.FedIC import disalign
 
 class Global(object):
     def __init__(self,
@@ -879,6 +879,8 @@ if __name__ == '__main__':
         Fedavg()
     elif args.algorithm == 'fedprox':
         FedProx()
+    elif args.algorithm == 'fedic':
+        disalign()
     else:
         raise ValueError("Unknow algoruithm:", args.algorithm)
 

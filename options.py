@@ -27,7 +27,7 @@ def args_parser():
     # use iNaturalist
 
     # 通用设置：
-    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox'],
+    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
     parser.add_argument('--num_clients', type=int, default=20)
@@ -35,8 +35,6 @@ def args_parser():
     parser.add_argument('--num_channels', type=int, default=3, help="number of channels of imges")
     parser.add_argument('--num_epochs_local_training', type=int, default=10)  #
     parser.add_argument('--batch_size_local_training', type=int, default=32)
-
-    # CREFF
     parser.add_argument('--path_cifar10', type=str, default=os.path.join(path_dir, 'data/CIFAR10/'))
     parser.add_argument('--path_cifar100', type=str, default=os.path.join(path_dir, 'data/CIFAR100/'))
     parser.add_argument('--num_classes', type=int, default=10)
@@ -59,6 +57,17 @@ def args_parser():
     parser.add_argument('--method', type=str, default='DSA', help='DC/DSA')
     parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate',
                         help='differentiable Siamese augmentation strategy')
+    # FedIC
+    parser.add_argument('--num_data_train', type=int, default=49000)
+    parser.add_argument('--total_steps', type=int, default=100)
+    parser.add_argument('--server_steps', type=int, default=100)
+    parser.add_argument('--mini_batch_size', type=int, default=20)
+    parser.add_argument('--mini_batch_size_unlabeled', type=int, default=128)
+    parser.add_argument('--lr_global_teaching', type=float, default=0.001)
+    parser.add_argument('--temperature', type=float, default=2)
+    parser.add_argument('--ld', type=float, default=0.5)
+    parser.add_argument('--ensemble_ld', type=float, default=0.0)
+
     # FedProx
     parser.add_argument('--mu', type=float, default=0.01)
     # FedAvgM

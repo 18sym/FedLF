@@ -40,8 +40,8 @@ def train_long_tail(list_label2indices_train, num_classes, imb_factor, imb_type)
     num_list_clients_indices = label_indices2indices(list_clients_indices)
     print('All num_data_train') # 打印提示信息
     print(len(num_list_clients_indices))  # 打印总的样本数量
-    return img_num_list, list_clients_indices  # 返回每个类别的样本数量列表和客户端的样本索引列表
-#
+    return list_clients_indices  # 返回每个类别的样本数量列表和客户端的样本索引列表
+# img_num_list,
 
 
 

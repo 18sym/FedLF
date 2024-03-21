@@ -72,6 +72,21 @@ def partition_unlabel(list_label2indices: list, num_data_train: int):
     return list_label2indices_unlabel
 
 """
+
+
+# FedIC
+def partition_train_teach(list_label2indices: list, num_data_train: int, seed=None):
+    random_state = np.random.RandomState(seed)
+    list_label2indices_train = []
+    list_label2indices_teach = []
+
+    for indices in list_label2indices:
+        random_state.shuffle(indices)
+        list_label2indices_train.append(indices[:num_data_train // 10])
+        list_label2indices_teach.append(indices[num_data_train // 10:])
+    return list_label2indices_train, list_label2indices_teach
+
+
 def label_indices2indices(list_label2indices):
     indices_res = []
 # 定义一个空列表，用来存储样本索引

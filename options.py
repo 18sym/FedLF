@@ -27,7 +27,7 @@ def args_parser():
     # use iNaturalist
 
     # 通用设置：
-    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic'],
+    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic','fedbn'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
     parser.add_argument('--num_clients', type=int, default=20)

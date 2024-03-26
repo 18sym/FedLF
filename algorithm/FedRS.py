@@ -536,7 +536,6 @@ def FedRS():
 
         # aggregating local models with FedAvg
         fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
-
         global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
         """
         # re-trained classifier
@@ -556,11 +555,17 @@ def FedRS():
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
         if r % 10 == 0:
             print("全局精确度：", re_trained_acc)
+            print()
             print("多数类的精确度：", ft_many)
+            print()
             print("中数类的精确度：", ft_medium)
+            print()
             print("少数类的精确度：", ft_few)
 
     print("全局精确度：", re_trained_acc)
+    print()
     print("多数类的精确度：", ft_many)
+    print()
     print("中数类的精确度：", ft_medium)
+    print()
     print("少数类的精确度：", ft_few)

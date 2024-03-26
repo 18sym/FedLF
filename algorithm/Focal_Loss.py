@@ -246,6 +246,54 @@ class Global(object):
             # 将全局参数中当前参数的值设置为上一步计算的全局平均值
         return fedavg_global_params  # 返回计算得到的全局参数，这些参数已经是所有客户端模型参数的平均值。
 
+    def global_eval_more(self, fedavg_params, data_test, batch_size_test, a):
+        # 首先加载模型参数
+        self.syn_model.load_state_dict(fedavg_params)
+        self.syn_model.eval()
+
+        # 定义类别的阈值
+        majority_threshold = 1500
+        minority_threshold = 200
+
+        # 初始化精确度计算所需的变量
+        num_corrects_majority, num_samples_majority = 0, 0
+        num_corrects_medium, num_samples_medium = 0, 0
+        num_corrects_minority, num_samples_minority = 0, 0
+
+        img_num_class = a
+
+        with no_grad():
+            test_loader = DataLoader(data_test, batch_size_test, shuffle=False)
+            for data_batch in test_loader:
+                images, labels = data_batch
+                images, labels = images.to(self.device), labels.to(self.device)
+
+                # 此处假设模型返回结果的方式
+                _, outputs = self.syn_model(images)
+                _, predicts = max(outputs, -1)
+
+                for label, predict in zip(labels, predicts):
+                    # 根据label确定样本所属的类别范围
+                    samples_num = img_num_class[label.item()]
+                    correct = predict.cpu().item() == label.cpu().item()
+                    if samples_num > majority_threshold:
+                        num_samples_majority += 1
+                        num_corrects_majority += correct
+                    elif samples_num < minority_threshold:
+                        num_samples_minority += 1
+                        num_corrects_minority += correct
+                    else:
+                        num_samples_medium += 1
+                        num_corrects_medium += correct
+
+        # 计算并返回三个类别（多数、中等、少数）的精确度，保留小数点后四位
+        accuracy_majority = round(num_corrects_majority / num_samples_majority, 4) if num_samples_majority > 0 else 0
+        accuracy_medium = round(num_corrects_medium / num_samples_medium, 4) if num_samples_medium > 0 else 0
+        accuracy_minority = round(num_corrects_minority / num_samples_minority, 4) if num_samples_minority > 0 else 0
+
+        # 返回计算结果
+        return accuracy_majority, accuracy_medium, accuracy_minority
+
     def global_eval(self, fedavg_params, data_test, batch_size_test):
         # 加载FedAVG参数到合成模型
         self.syn_model.load_state_dict(fedavg_params)
@@ -432,7 +480,7 @@ def Focal_Loss():
 
     # 对数据进行异构和长尾设置
     # 注意：下面的下面的train_long_tail和clients_indices函数需要根据上下文中的实际定义进行解释，因为这些函数在提供的代码中未定义
-    _, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
+    a, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
                                                       args.imb_factor, args.imb_type)
     # 根据给定的参数生成客户端的数据索引
     list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
@@ -451,6 +499,10 @@ def Focal_Loss():
     indices2data = Indices2Dataset(data_local_training)
     re_trained_acc = []
     # 初始化空列表，用于存储重新训练后的准确率
+    # 输出多种精确度
+    ft_many = []
+    ft_medium = []
+    ft_few = []
 
     # 选择一个临时线性模型，用于申城特征和程参数
     temp_model = nn.Linear(256, 10).to(args.device)
@@ -527,9 +579,21 @@ def Focal_Loss():
         # global eval
         one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
         re_trained_acc.append(one_re_train_acc)
+        # 输出多种精确度
+        many, medium, few = global_model.global_eval_more(fedavg_params, data_global_test, args.batch_size_test, a)
+        ft_many.append(many)
+        ft_medium.append(medium)
+        ft_few.append(few)
+
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
         if r % 10 == 0:
-            print(re_trained_acc)
+            print("全局精确度：", re_trained_acc)
+            print()
+            print("多数类的精确度：", ft_many)
+            print()
+            print("中数类的精确度：", ft_medium)
+            print()
+            print("少数类的精确度：", ft_few)
 
             # 构建用于t-SNE评估的数据加载器
             test_loader = DataLoader(data_global_test, batch_size=args.batch_size_test, shuffle=False)
@@ -542,5 +606,11 @@ def Focal_Loss():
             # 调用t-SNE评估函数
             tsne_evaluation(global_model.syn_model, test_loader, save_path=save_path)
 
-    print(re_trained_acc)
+    print("全局精确度：", re_trained_acc)
+    print()
+    print("多数类的精确度：", ft_many)
+    print()
+    print("中数类的精确度：", ft_medium)
+    print()
+    print("少数类的精确度：", ft_few)
 

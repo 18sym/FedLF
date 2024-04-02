@@ -11,7 +11,8 @@ from options import args_parser
 from Dataset.long_tailed_cifar10 import train_long_tail
 # 自己定义的函数，可用于处理长尾数据集CIFAR-10
 
-from Dataset.dataset import classify_label, show_clients_data_distribution, Indices2Dataset, TensorDataset, get_class_num
+from Dataset.dataset import classify_label, show_clients_data_distribution, Indices2Dataset, TensorDataset, \
+    get_class_num
 # 从自己定义的包中导入定义文件的函数
 
 from Dataset.sample_dirichlet import clients_indices
@@ -29,7 +30,7 @@ from torch import stack, max, eq, no_grad, tensor, unsqueeze, split
 from torch.optim import SGD
 # 导入SGD实现随机梯度下降优化算法
 
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, MSELoss
 # 用于计算交叉熵损失，长用于多分类问题
 
 from torch.utils.data.dataloader import DataLoader
@@ -60,16 +61,8 @@ from Dataset.param_aug import DiffAugment
 # 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
 from algorithm.FedIC import disalign
 from algorithm.FedBN import FedBN
-from algorithm.Focal_Loss import *
-from algorithm.FedRS import FedRS
-from  algorithm.our import our
 
-
-
-
-
-
-
+torch.autograd.set_detect_anomaly(True)
 
 class Global(object):
     def __init__(self,
@@ -95,7 +88,8 @@ class Global(object):
                                        requires_grad=True, device=args.device)
 
         # 创建合成标签，每个类别有num_of_feature个相同的标签，不需要梯度
-        self.label_syn = torch.tensor([np.ones(self.num_of_feature) * i for i in range(args.num_classes)], dtype=torch.long,
+        self.label_syn = torch.tensor([np.ones(self.num_of_feature) * i for i in range(args.num_classes)],
+                                      dtype=torch.long,
                                       requires_grad=False, device=args.device).view(-1)  # [0,0,0, 1,1,1, ..., 9,9,9]
         """
         创建一个PyTorch张量label_syn，该张量包含合成数据的标签。让我们逐步解析这个表达式：
@@ -144,7 +138,7 @@ class Global(object):
         # 创建一个字典，键为0、1、2，值为空列表
         gw_real_all = {class_index: [] for class_index in range(3)}
         print(gw_real_all)
-        
+
         {0: [], 1: [], 2: []}
         """
         gw_real_all = {class_index: [] for class_index in range(self.num_classes)}
@@ -173,66 +167,6 @@ class Global(object):
                     gw_real_temp.append(value_global_param)
                 gw_real_avg[i] = gw_real_temp
 
-
-        # 只有在creff的时候才需要此段代码，进行更新联邦特征
-        # update the federated features.
-        # 更新联邦特征
-        """
-        for ep in range(args.match_epoch):
-            loss_feature = torch.tensor(0.0).to(args.device)
-            for c in range(args.num_classes):
-                if len(gw_real_avg[c]) != 0:
-                    feature_syn = self.feature_syn[c * self.num_of_feature:(c + 1) * self.num_of_feature].reshape(
-                        (self.num_of_feature, 256))
-                    lab_syn = torch.ones((self.num_of_feature,), device=args.device, dtype=torch.long) * c
-                    output_syn = self.feature_net(feature_syn)
-                    loss_syn = self.criterion(output_syn, lab_syn)
-
-                    # compute the federated feature gradients of class c
-                    # 计算类c的联邦特征梯度
-                    gw_syn = torch.autograd.grad(loss_syn, net_global_parameters, create_graph=True)
-                    loss_feature += match_loss(gw_syn, gw_real_avg[c], args)
-            self.optimizer_feature.zero_grad()
-            loss_feature.backward()
-            self.optimizer_feature.step()
-            """
-
-    def feature_re_train(self, fedavg_params, batch_size_local_training):
-        # 深度复制特征和程和标签合成
-        feature_syn_train_ft = copy.deepcopy(self.feature_syn.detach())
-        label_syn_train_ft = copy.deepcopy(self.label_syn.detach())
-        # 构建特征-标签训练数据集
-        dst_train_syn_ft = TensorDataset(feature_syn_train_ft, label_syn_train_ft)
-        # 构建线性模型
-        ft_model = nn.Linear(256, 10).to(args.device)
-        # 创建优化器
-        optimizer_ft_net = SGD(ft_model.parameters(), lr=args.lr_net)  # optimizer_img for synthetic data
-        ft_model.train()
-        # 进行特征重训练
-        for epoch in range(args.crt_epoch):
-            trainloader_ft = DataLoader(dataset=dst_train_syn_ft,
-                                        batch_size=batch_size_local_training,
-                                        shuffle=True)
-            for data_batch in trainloader_ft:
-                images, labels = data_batch
-                images, labels = images.to(self.device), labels.to(self.device)
-                outputs = ft_model(images)
-                loss_net = self.criterion(outputs, labels)
-                optimizer_ft_net.zero_grad()
-                loss_net.backward()
-                optimizer_ft_net.step()
-        ft_model.eval()
-        # 获取线性模型
-        feature_net_params = ft_model.state_dict()
-        # 对FedAvg参数进行反向遍历
-        for name_param in reversed(fedavg_params):
-            if name_param == 'classifier.bias':
-                fedavg_params[name_param] = feature_net_params['bias']
-            if name_param == 'classifier.weight':
-                fedavg_params[name_param] = feature_net_params['weight']
-                break
-        return copy.deepcopy(ft_model.state_dict()), copy.deepcopy(fedavg_params)
-
     def initialize_for_model_fusion(self, list_dicts_local_params: list, list_nums_local_data: list):
         # 初始化fedavg全局参数
         fedavg_global_params = copy.deepcopy(list_dicts_local_params[0])
@@ -248,6 +182,7 @@ class Global(object):
             fedavg_global_params[name_param] = value_global_param
             # 将全局参数中当前参数的值设置为上一步计算的全局平均值
         return fedavg_global_params  # 返回计算得到的全局参数，这些参数已经是所有客户端模型参数的平均值。
+
     def global_eval_more(self, fedavg_params, data_test, batch_size_test, a):
         # 首先加载模型参数
         self.syn_model.load_state_dict(fedavg_params)
@@ -297,6 +232,7 @@ class Global(object):
         return accuracy_majority, accuracy_medium, accuracy_minority
 
 
+
     def global_eval(self, fedavg_params, data_test, batch_size_test):
         # 加载FedAVG参数到合成模型
         self.syn_model.load_state_dict(fedavg_params)
@@ -319,19 +255,24 @@ class Global(object):
         # 下载合成模型参数
         return self.syn_model.state_dict()
 
+
 class Local(object):
     def __init__(self,
                  data_client,
                  class_list: int):
         # 初始化函数，接受数据集和类别列表作为参数
+
         args = args_parser()  # 解析命令行参数
 
         self.data_client = data_client  # 客户端数据集
 
         self.device = args.device  # 设备
-        self.class_compose = class_list    # 类别列表
+        self.num_classes = args.num_classes
+        self.class_compose = class_list  # 类别列表
 
-        self.criterion = CrossEntropyLoss().to(args.device)    # 交叉熵损失函数
+        self.criterion = CrossEntropyLoss().to(args.device)  # 交叉熵损失函数
+        self.second_loss = MSELoss().to(args.device)  # 第二个损失函数为MSEloss
+
 
         # 初始化本地模型，使用 ResNet 架构
         self.local_model = ResNet_cifar(resnet_size=8, scaling=4,
@@ -408,7 +349,7 @@ class Local(object):
             truth_gradient_avg[i] = gw_real_temp
         return truth_gradient_avg
 
-    def local_train(self, args, global_params):
+    def local_train(self, args, global_params, dist, f_G):
         # 本地训练函数
         transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
             transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
@@ -417,9 +358,21 @@ class Local(object):
         # 加载全局参数到本地模型
         self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
         self.local_model.train()  # 将本地模型设置为训练模式
+        self.num_classes = args.num_classes
+        # 初始化一个本地f_k
+        f_k = torch.zeros(self.num_classes, 256, device=self.device)
+        # print("初始化的f_k为:", f_k)
+
+        # 用来计算平均损失
+        total_loss = 0.0  # 初始化累积损失变量
+        total_batches = 0  # 用于计算平均损失的批次总数
 
         # 训练若干周期
         for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
+            #
+            feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
+            class_counter = torch.zeros(self.num_classes, device=self.device)
+
             # 创建数据加载器，用于加载本地客户端的数据批次
             data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
                                      batch_size=args.batch_size_local_training,  # 批次大小为输入大小
@@ -428,10 +381,38 @@ class Local(object):
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
                 images = transform_train(images)
-                _, outputs = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
+                # 初始化一个中间变量
+
+                # FedRS关键  hs指的是特征
+                hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
+                # print("特征的大小为：", hs.size())
+                # print("特征提取器其取出来的特征大小为：", hs)
+                # print(hs.size())
+
+                # 累积特征和样本数
+                for i in range(hs.size(0)):
+                    feature_accumulator[labels[i]] += hs[i]
+                    class_counter[labels[i]] += 1
+
+
+                ws = self.local_model.classifier.weight
+                hs, ws = hs.to(self.device), ws.to(self.device)
+
+                cdist = dist / dist.max()
+                cdist = cdist.to(self.device)
+                cdist = cdist * (1.0 - args.rs_alpha) + args.rs_alpha
+                # 减少极端样本分布对模型训练的干扰
+                cdist = cdist.reshape((1, -1))
+                # 改变张量的形状，转化为二维的
+
+                logits = cdist * hs.mm(ws.transpose(0, 1))
+
+
                 # 计算loss
-                loss = self.criterion(outputs, labels)
-                # print(loss.item())
+                loss = self.criterion(logits, labels) + 0.5 * self.second_loss(f_k, f_G)
+                total_loss += loss.item()  # 累积损失
+                total_batches += 1  # 更新批次计数
+
                 # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                 self.optimizer.zero_grad()
                 # 反向传播：计算损失函数关于模型参数的梯度
@@ -439,24 +420,44 @@ class Local(object):
                 # 根据梯度更新模型参数，执行一步优化
                 self.optimizer.step()
 
-        return self.local_model.state_dict()
+                self.optimizer.step()  # 根据梯度更新模型参数，执行一步优化
 
-    def local_train_prox(self, args, global_params):
+                # 在每个周期结束后，计算每个类别的平均特征
+                with torch.no_grad():  # 告诉PyTorch不需要在这个with语句块中跟踪梯度
+                    f_k_temp = f_k.clone().detach()  # 创建f_k的副本并从计算图中分离
+                    for i in range(self.num_classes):
+                        if class_counter[i] > 0:
+                            f_k_temp[i] = feature_accumulator[i] / class_counter[i]
+                    f_k = f_k_temp
+        average_loss = total_loss / total_batches
+        print("平均损失为：", average_loss)
+        return self.local_model.state_dict(), f_k, average_loss
+    """
+    # 如果在服务器上使用多精度混合加速训练过程：
+        import torch
+        from torch.cuda.amp import GradScaler, autocast  # 导入必要的库
+
+        def local_train(self, args, global_params, dist, f_G):
         # 本地训练函数
         transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
             transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
             transforms.RandomHorizontalFlip()])  # 随机水平翻转
-        """
-        local_model = self.local_model
-        local_model.train()  # 将本地模型设置为训练模式
-        local_param = local_model.state_dict()
-        """
+        
         # 加载全局参数到本地模型
         self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
         self.local_model.train()  # 将本地模型设置为训练模式
-        local_param = self.local_model.state_dict()
+        self.num_classes = args.num_classes
+        # 初始化一个本地f_k
+        f_k = torch.zeros(self.num_classes, 256, device=self.device)
+        # 初始化梯度缩放器
+        scaler = GradScaler()
+        
         # 训练若干周期
         for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
+            #
+            feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
+            class_counter = torch.zeros(self.num_classes, device=self.device)
+        
             # 创建数据加载器，用于加载本地客户端的数据批次
             data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
                                      batch_size=args.batch_size_local_training,  # 批次大小为输入大小
@@ -464,201 +465,58 @@ class Local(object):
             for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
-                # print(labels.size())
                 images = transform_train(images)
-                # print(labels.size())
-                _, outputs = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
-                # print(outputs.size())
-                # outputs = outputs.squeeze()
-                # print(outputs.size())
-
-                # 计算proximal_term
-                proximal_term = 0.0
-                for w, w_t in zip(local_param.values(), global_params.values()):
-                    # 确保全局参数与本地模型参数的形状匹配
-                    proximal_term += (w.float() - w_t.float()).norm(2)
-                    # print(proximal_term)
-
-                loss = self.criterion(outputs, labels) + (args.mu / 2) * proximal_term
-                # print(loss.item())
-                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
+        
+                # 使用自动混合精度
+                with autocast():  # 将这个块内的运算自动转为混合精度
+                    hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
+        
+                    ws = self.local_model.classifier.weight
+                    ws = ws.to(self.device)
+        
+                    cdist = dist / dist.max()
+                    cdist = cdist.to(self.device)
+                    cdist = cdist * (1.0 - args.rs_alpha) + args.rs_alpha
+        
+                    cdist = cdist.reshape((1, -1))
+        
+                    logits = cdist * hs.mm(ws.transpose(0, 1))
+        
+                    # 计算loss
+                    loss = self.criterion(logits, labels) + self.second_loss(f_k, f_G)
+        
+                # 反向传播
                 self.optimizer.zero_grad()
-                # 反向传播：计算损失函数关于模型参数的梯度
-                loss.backward()
-                # 根据梯度更新模型参数，执行一步优化
-                self.optimizer.step()
+                scaler.scale(loss).backward()  # 使用缩放器来放大梯度，避免在混合精度训练中梯度过小而消失
+                scaler.step(self.optimizer)  # 根据放大的梯度更新模型参数
+                scaler.update()  # 准备下一轮放大
+        
+                # 累积特征和样本数
+                with torch.no_grad():  # 在这个模式下，所有的计算都不会生成梯度
+                    for i in range(hs.size(0)):
+                        feature_accumulator[labels[i]] += hs[i].float()  # 使用.float()确保高精度
+                        class_counter[labels[i]] += 1
+        
+                    # 在每个周期结束后，计算每个类别的平均特征
+                    f_k_temp = f_k.clone().detach()  # 创建f_k的副本并从计算图中分离
+                    for i in range(self.num_classes):
+                        if class_counter[i] > 0:
+                            f_k_temp[i] = feature_accumulator[i] / class_counter[i]
+                    f_k = f_k_temp
+        
+        return self.local_model.state_dict(), f_k
+    """
 
-        return self.local_model.state_dict()
-
-
-def CReFF():
+def our():
     args = args_parser()
     print(
-        'imb_factor:{ib}, non_iid:{non_iid}\n'
-        'lr_net:{lr_net}, lr_feature:{lr_feature}, num_of_feature:{num_of_feature}\n '
-        'match_epoch:{match_epoch}, re_training_epoch:{crt_epoch}\n'.format(
-            ib=args.imb_factor,
-            non_iid=args.non_iid_alpha,
-            lr_net=args.lr_net,
-            lr_feature=args.lr_feature,
-            num_of_feature=args.num_of_feature,
-            match_epoch=args.match_epoch,
-            crt_epoch=args.crt_epoch))
-    random_state = np.random.RandomState(args.seed)
-
-    # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
-    transform_all = transforms.Compose([
-        transforms.ToTensor(),  # 将图片转为张量
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])  # 对图像进行归一化处理
-    # 根据命令行参数加载数据集
-    if args.dataset == 'cifar10':
-        data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
-        data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
-    elif args.dataset == 'cifar100':
-        data_local_training = datasets.CIFAR100(args.path_cifar100, train=True, download=True, transform=transform_all)
-        data_global_test = datasets.CIFAR100(args.path_cifar100, train=False, transform=transform_all)
-    else:
-        raise ValueError("Unknown dataset:", args.dataset)
-
-    """
-    transform_all = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
-    data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
-    """
-    # Distribute data 分类数据
-    # 对数据进行分组，按照类别对数据进行分类 这里用到了dataset里面的函数
-    list_label2indices = classify_label(data_local_training, args.num_classes)
-    # heterogeneous and long_tailed setting
-
-    # 对数据进行异构和长尾设置
-    # 注意：下面的下面的train_long_tail和clients_indices函数需要根据上下文中的实际定义进行解释，因为这些函数在提供的代码中未定义
-    a, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
-                                                      args.imb_factor, args.imb_type)
-    # 根据给定的参数生成客户端的数据索引
-    list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
-                                          args.num_clients, args.non_iid_alpha, args.seed)
-    # 展示每个客户端的数据分布情况
-    original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
-                                                              args.num_classes)
-    # 全局模型的初始化,其中包括类别数、设备、参数等等
-    global_model = Global(num_classes=args.num_classes,
-                          device=args.device,
-                          args=args,
-                          num_of_feature=args.num_of_feature)
-    # 创建一个包含所有客户端索引的列表
-    total_clients = list(range(args.num_clients))  #
-    # 初始化一个“indices2data”，用于将客户端索引映射到数据集
-    indices2data = Indices2Dataset(data_local_training)
-    re_trained_acc = []
-    # 输出多种精确度
-    ft_many = []
-    ft_medium = []
-    ft_few = []
-    # 初始化空列表，用于存储重新训练后的准确率
-
-    # 选择一个临时线性模型，用于申城特征和程参数
-    temp_model = nn.Linear(256, 10).to(args.device)
-    syn_params = temp_model.state_dict()
-    # 这个方法会获得一个字典，包含了模型中所有可学习的参数的名称以及对应的张量值。这个字典通常用于保存模型参数或者在模型中传递参数
-
-
-    # 迭代训练
-    for r in tqdm(range(1, args.num_rounds + 1), desc='server-training'):
-        """
-            作用：遍历从1到args.num_rounds的整数序列，并在每次迭代之前显示一个描述为”server-training“的进度条
-            for r in ...: 这是一个 for 循环，它会遍历一个迭代器中的每个元素。循环中的变量 r 用来迭代迭代器中的元素。
-            tqdm(...): tqdm 是一个 Python 库，用于在循环中显示进度条，使得长时间运行的循环更具可视化效果。
-            range(1, args.num_rounds + 1): 这部分定义了迭代器，它会生成从 1 到 args.num_rounds（包括 args.num_rounds）的整数序列
-            desc='server-training': 这个参数设置了进度条的描述文本，显示在进度条前面，用于指示当前循环的目的或阶段。
-        """
-        # 下载全局参数，global_params为一个字典
-        global_params = global_model.download_params()
-        # 使用的deepcopy的方法，为了在后续的修改当中，可以安全的对这个修改，而不会影响到原始的global_params
-        syn_feature_params = copy.deepcopy(global_params)
-
-        for name_param in reversed(syn_feature_params):
-            # 采用了reversed方法，逆序遍历，从而确保在在修改参数的时候不会对后面的参数造成影响
-            if name_param == 'classifier.bias':
-                # 如果参数名是：classifier.bias，则修改成syn_params['bias'] 中的值
-                syn_feature_params[name_param] = syn_params['bias']
-            if name_param == 'classifier.weight':
-                # 如果参数名是分类器的权重，则修改成syn_params['weight']中的值
-                syn_feature_params[name_param] = syn_params['weight']
-                break
-
-        online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
-        # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
-        # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
-
-        list_clients_gradient = []  # 存储客户端的梯度信息
-        list_dicts_local_params = []  # 存储每个客户端的本地参数信息
-        list_nums_local_data = []   # 存储每个客户端的本地数量信息
-        # local training
-        for client in online_clients:
-            indices2data.load(list_client2indices[client])
-            # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
-            data_client = indices2data
-            # 把这个赋值给data_client 包含特定样本索引的 数据集对象。方便以后操作，不会对原数据造成损坏
-            list_nums_local_data.append(len(data_client))
-            # 用于记录每个客户端的本地数据集的大小
-
-            local_model = Local(data_client=data_client,
-                                class_list=original_dict_per_client[client])
-            # local_model 初始化成为了一个local对象，里面有我们预先设定好的初始值，包括优化器，网络什么的
-
-            # compute the real feature gradients in local data
-            truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
-            list_clients_gradient.append(copy.deepcopy(truth_gradient))
-
-            # local update
-            local_params = local_model.local_train(args, copy.deepcopy(global_params))
-            list_dicts_local_params.append(copy.deepcopy(local_params))
-        # aggregating local models with FedAvg
-        fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
-        global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
-        # re-trained classifier
-        syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
-                                                              args.batch_size_local_training)
-        # global eval
-        one_re_train_acc = global_model.global_eval(ft_params, data_global_test, args.batch_size_test)
-        re_trained_acc.append(one_re_train_acc)
-        # 输出多种精确度
-        many, medium, few = global_model.global_eval_more(ft_params, data_global_test, args.batch_size_test, a)
-        ft_many.append(many)
-        ft_medium.append(medium)
-        ft_few.append(few)
-        global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
-        if r % 10 == 0:
-            print("全局精确度：", re_trained_acc)
-            print()
-            print("多数类的精确度：", ft_many)
-            print()
-            print("中数类的精确度：", ft_medium)
-            print()
-            print("少数类的精确度：", ft_few)
-
-    print("全局精确度：", re_trained_acc)
-    print()
-    print("多数类的精确度：", ft_many)
-    print()
-    print("中数类的精确度：", ft_medium)
-    print()
-    print("少数类的精确度：", ft_few)
-
-
-def Fedavg():
-    args = args_parser()
-    print(
-        'imb_factor:{ib}, non_iid:{non_iid}\n'
+        'imb_factor:{ib}, non_iid:{non_iid}, rs_alpha:{rs_alpha}\n'
         'lr_local_training:{lr_local_training}\n'
         'num_rounds:{num_rounds},num_epochs_local_training:{num_epochs_local_training},batch_size_local_training:{batch_size_local_training}\n'
         'num_online_clients:{num_online_clients}\n'.format(
             ib=args.imb_factor,
             non_iid=args.non_iid_alpha,
+            rs_alpha=args.rs_alpha,
             lr_local_training=args.lr_local_training,
             num_rounds=args.num_rounds,
             num_epochs_local_training=args.num_epochs_local_training,
@@ -705,6 +563,14 @@ def Fedavg():
     # 展示每个客户端的数据分布情况，并返回原始的数据字典
     original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
                                                               args.num_classes)
+    # 初始化一个全局质心 这里注意特征的维数, args.feature_dim
+    f_G = torch.randn(args.num_classes, 256, device=args.device)
+    # 这里的f_G是一个矩阵，矩阵大小为num_classes x 256，每一行代表一个类的特征向量的中心
+    # print("初始化的全局质心为：", f_G)
+    # print('大小为：', f_G.size())
+
+
+
     # 全局模型的初始化,其中包括类别数、设备、参数等等
     global_model = Global(num_classes=args.num_classes,
                           device=args.device,
@@ -715,11 +581,11 @@ def Fedavg():
     # 初始化一个“indices2data”，用于将客户端索引映射到数据集
     indices2data = Indices2Dataset(data_local_training)
     re_trained_acc = []
-    # 初始化空列表，用于存储重新训练后的准确率
     # 输出多种精确度
     ft_many = []
     ft_medium = []
     ft_few = []
+    # 初始化空列表，用于存储重新训练后的准确率
 
     # 选择一个临时线性模型，用于申城特征和程参数
     temp_model = nn.Linear(256, 10).to(args.device)
@@ -758,8 +624,20 @@ def Fedavg():
         list_clients_gradient = []  # 存储客户端的梯度信息
         list_dicts_local_params = []  # 存储每个客户端的本地参数信息
         list_nums_local_data = []  # 存储每个客户端的本地数量信息
+        f_locals = []  # 存储每个用户的特征的信息
+        # print("初始化的列表，用来存储f_k:", f_locals)
+        all_loss = []  # 用来存储每一轮的平均损失
+
+
         # local training
         for client in online_clients:
+
+            # FedRS 需要获取当前客户端的分布情况
+            cnts = torch.tensor(original_dict_per_client[client])
+            # print(f"客户端 {client} 的数据分布: {cnts}")  # 不要忘记转化为张量！
+            dist = cnts / cnts.sum()  # 将当前客户端样本分布情况张量中每个类别的样本数量除以总样本数量之和，得到每个类别在当前客户端样本中的相对分布比例。
+            # print(f"客户端 {client} 的数据分布: {dist}")
+
             indices2data.load(list_client2indices[client])
             # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
             data_client = indices2data
@@ -777,16 +655,56 @@ def Fedavg():
             """
 
             # local update 注意这里更新只用了一部，其余在local里面
-            local_params = local_model.local_train(args, copy.deepcopy(global_params))
+            local_params, f_k, average_loss = local_model.local_train(args, copy.deepcopy(global_params), dist, f_G)
             # print(local_params)
+            # 本地训练不仅要上传model，还要上传自己的本地f_k
 
             # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
             list_dicts_local_params.append(copy.deepcopy(local_params))
             # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
 
+            # 把结果添加到f_locals中
+            f_locals.append(f_k)
+            all_loss.append(average_loss)
+            # print("一轮训练结束后的存储列表", f_locals)
+            # print("f_locals的大小为:", len(f_locals))
+            # print()
+            # for i, f_k in enumerate(f_locals):
+                # print(f"客户端 {i} 的f_k大小: {f_k.size()}")
+            # print()
+
+        # 更新自己的f_G  更新规则需要修改
+        # 引入torch.nn.CosineSimilarity模块，用于计算余弦相似度
+        sim = torch.nn.CosineSimilarity(dim=1)
+
+        # 初始化临时变量tmp，用于累加加权的局部特征
+        tmp = 0
+
+        # 初始化w_sum，用于累加所有的相似度权重，以便于之后进行归一化
+        w_sum = 0
+
+        # 遍历f_locals中的每一个局部特征i
+        for i in f_locals:
+            # 计算全局特征f_G与当前局部特征i之间的相似度权重
+            # 并将其重塑为args.num_classes x 1的形状
+            sim_weight = sim(f_G, i).reshape(args.num_classes, 1)
+
+            # 累加当前的相似度权重到w_sum中
+            w_sum += sim_weight
+
+            # 将当前的相似度权重乘以对应的局部特征，然后累加到tmp中
+            tmp += sim_weight * i
+
+        # 使用torch.div进行元素-wise的除法操作，用累加的加权局部特征tmp除以总的相似度权重w_sum
+        # 这一步计算加权平均，更新全局特征f_G
+        f_G = torch.div(tmp, w_sum)  # 这里更新计算了新的全局特征
+        # print("更新后的全局质心为：", f_G)
+        # print('大小为：', f_G.size())
+
+
+
         # aggregating local models with FedAvg
         fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
-
         global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
         """
         # re-trained classifier
@@ -797,10 +715,12 @@ def Fedavg():
         one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
         re_trained_acc.append(one_re_train_acc)
 
+        # 输出多种精确度
         many, medium, few = global_model.global_eval_more(fedavg_params, data_global_test, args.batch_size_test, a)
         ft_many.append(many)
         ft_medium.append(medium)
         ft_few.append(few)
+
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
         if r % 10 == 0:
             print("全局精确度：", re_trained_acc)
@@ -810,6 +730,8 @@ def Fedavg():
             print("中数类的精确度：", ft_medium)
             print()
             print("少数类的精确度：", ft_few)
+            print()
+            print('每一轮此的loss变化为：', all_loss)
 
     print("全局精确度：", re_trained_acc)
     print()
@@ -818,201 +740,5 @@ def Fedavg():
     print("中数类的精确度：", ft_medium)
     print()
     print("少数类的精确度：", ft_few)
-
-def FedProx():
-    # 只需要在Local Model里面的local_train 加入一个近端项就可以了 options里面的加的是  mu
-    args = args_parser()
-    print(
-        'imb_factor:{ib}, non_iid:{non_iid}\n'
-        'lr_local_training:{lr_local_training}, mu:{mu}\n'
-        'num_rounds:{num_rounds}, num_epochs_local_training:{num_epochs_local_training}, batch_size_local_training:{batch_size_local_training}\n'
-        'num_online_clients:{num_online_clients}\n'.format(
-            ib=args.imb_factor,
-            non_iid=args.non_iid_alpha,
-            lr_local_training=args.lr_local_training,
-            mu=args.mu,
-            num_rounds=args.num_rounds,
-            num_epochs_local_training=args.num_epochs_local_training,
-            batch_size_local_training=args.batch_size_local_training,
-            num_online_clients=args.num_online_clients))
-
-    random_state = np.random.RandomState(args.seed)
-
-    # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
-    transform_all = transforms.Compose([
-        transforms.ToTensor(),  # 将图片转为张量
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])  # 对图像进行归一化处理
-    # 根据命令行参数加载数据集
-    if args.dataset == 'cifar10':
-        data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
-        data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
-    elif args.dataset == 'cifar100':
-        data_local_training = datasets.CIFAR100(args.path_cifar100, train=True, download=True, transform=transform_all)
-        data_global_test = datasets.CIFAR100(args.path_cifar100, train=False, transform=transform_all)
-    else:
-        raise ValueError("Unknown dataset:", args.dataset)
-
-    """
-    transform_all = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=transform_all)
-    data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_all)
-    """
-    # Distribute data 分类数据
-    # 对数据进行分组，按照类别对数据进行分类 这里用到了dataset里面的函数
-    list_label2indices = classify_label(data_local_training, args.num_classes)
-    # heterogeneous and long_tailed setting
-
-    # 对数据进行异构和长尾设置
-    # 注意：下面的下面的train_long_tail和clients_indices函数需要根据上下文中的实际定义进行解释，因为这些函数在提供的代码中未定义
-    a, list_label2indices_train_new = train_long_tail(copy.deepcopy(list_label2indices), args.num_classes,
-                                                      args.imb_factor, args.imb_type)
-    # 根据给定的参数生成客户端的数据索引
-    list_client2indices = clients_indices(copy.deepcopy(list_label2indices_train_new), args.num_classes,
-                                          args.num_clients, args.non_iid_alpha, args.seed)
-    # 展示每个客户端的数据分布情况，并返回原始的数据字典
-    original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
-                                                              args.num_classes)
-    # 全局模型的初始化,其中包括类别数、设备、参数等等
-    global_model = Global(num_classes=args.num_classes,
-                          device=args.device,
-                          args=args,
-                          num_of_feature=args.num_of_feature)
-    # 创建一个包含所有客户端索引的列表
-    total_clients = list(range(args.num_clients))  #
-    # 初始化一个“indices2data”，用于将客户端索引映射到数据集
-    indices2data = Indices2Dataset(data_local_training)
-    re_trained_acc = []
-    # 初始化空列表，用于存储重新训练后的准确率
-    # 输出多种精确度
-    ft_many = []
-    ft_medium = []
-    ft_few = []
-
-    # 选择一个临时线性模型，用于申城特征和程参数
-    temp_model = nn.Linear(256, 10).to(args.device)
-    syn_params = temp_model.state_dict()
-    # 这个方法会获得一个字典，包含了模型中所有可学习的参数的名称以及对应的张量值。这个字典通常用于保存模型参数或者在模型中传递参数
-
-    # 迭代训练
-    for r in tqdm(range(1, args.num_rounds + 1), desc='server-training'):
-        """
-            作用：遍历从1到args.num_rounds的整数序列，并在每次迭代之前显示一个描述为”server-training“的进度条
-            for r in ...: 这是一个 for 循环，它会遍历一个迭代器中的每个元素。循环中的变量 r 用来迭代迭代器中的元素。
-            tqdm(...): tqdm 是一个 Python 库，用于在循环中显示进度条，使得长时间运行的循环更具可视化效果。
-            range(1, args.num_rounds + 1): 这部分定义了迭代器，它会生成从 1 到 args.num_rounds（包括 args.num_rounds）的整数序列
-            desc='server-training': 这个参数设置了进度条的描述文本，显示在进度条前面，用于指示当前循环的目的或阶段。
-        """
-        # 下载全局参数，global_params为一个字典
-        global_params = global_model.download_params()
-
-        # 使用的deepcopy的方法，为了在后续的修改当中，可以安全的对这个修改，而不会影响到原始的global_params
-        syn_feature_params = copy.deepcopy(global_params)
-
-        for name_param in reversed(syn_feature_params):
-            # 采用了reversed方法，逆序遍历，从而确保在在修改参数的时候不会对后面的参数造成影响
-            if name_param == 'classifier.bias':
-                # 如果参数名是：classifier.bias，则修改成syn_params['bias'] 中的值
-                syn_feature_params[name_param] = syn_params['bias']
-            if name_param == 'classifier.weight':
-                # 如果参数名是分类器的权重，则修改成syn_params['weight']中的值
-                syn_feature_params[name_param] = syn_params['weight']
-                break
-
-        online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
-        # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
-        # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
-
-        list_clients_gradient = []  # 存储客户端的梯度信息
-        list_dicts_local_params = []  # 存储每个客户端的本地参数信息
-        list_nums_local_data = []  # 存储每个客户端的本地数量信息
-        # local training
-        for client in online_clients:
-            indices2data.load(list_client2indices[client])
-            # 加载指定样本的样本索引集，这里的indices2data在数据集划分的时候就已经出现了
-            data_client = indices2data
-            # 把这个赋值给data_client 包含特定样本索引的 数据集对象。方便以后操作，不会对原数据造成损坏
-            list_nums_local_data.append(len(data_client))
-            # 用于记录每个客户端的本地数据集的大小
-
-            local_model = Local(data_client=data_client,
-                                class_list=original_dict_per_client[client])
-            # local_model 初始化成为了一个local对象，里面有我们预先设定好的初始值，包括优化器，网络什么的
-            """
-            # compute the real feature gradients in local data
-            truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
-            list_clients_gradient.append(copy.deepcopy(truth_gradient))
-            """
-
-            # local update 注意这里更新只用了一部，其余在local里面
-            # 确保全局参数与本地模型参数的形状匹配
-            local_params = local_model.local_train_prox(args, copy.deepcopy(global_params))
-            # print(local_params)
-
-            # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
-            list_dicts_local_params.append(copy.deepcopy(local_params))
-            # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
-
-        # aggregating local models with FedAvg
-        fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
-
-        global_model.update_feature_syn(args, copy.deepcopy(syn_feature_params), list_clients_gradient)
-        """
-        # re-trained classifier
-        syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
-                                                              args.batch_size_local_training)
-        """
-        # global eval
-        one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
-        re_trained_acc.append(one_re_train_acc)
-        many, medium, few = global_model.global_eval_more(fedavg_params, data_global_test, args.batch_size_test, a)
-        ft_many.append(many)
-        ft_medium.append(medium)
-        ft_few.append(few)
-        global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
-        if r % 10 == 0:
-            print("全局精确度：", re_trained_acc)
-            print()
-            print("多数类的精确度：", ft_many)
-            print()
-            print("中数类的精确度：", ft_medium)
-            print()
-            print("少数类的精确度：", ft_few)
-
-    print("全局精确度：", re_trained_acc)
     print()
-    print("多数类的精确度：", ft_many)
-    print()
-    print("中数类的精确度：", ft_medium)
-    print()
-    print("少数类的精确度：", ft_few)
-
-if __name__ == '__main__':
-    torch.manual_seed(7)  # cpu
-    torch.cuda.manual_seed(7)  # gpu
-    np.random.seed(7)  # numpy
-    random.seed(7)  # random and transforms
-    torch.backends.cudnn.deterministic = True  # cudnn
-    args = args_parser()
-    if args.algorithm == 'creff':
-        CReFF()
-    elif args.algorithm == 'fedavg':
-        Fedavg()
-    elif args.algorithm == 'fedprox':
-        FedProx()
-    elif args.algorithm == 'fedic':
-        disalign()
-    elif args.algorithm == 'fedbn':
-        FedBN()
-    elif args.algorithm == 'focalloss':
-        Focal_Loss()
-    elif args.algorithm == 'fedrs':
-        FedRS()
-    elif args.algorithm == 'our':
-        our()
-    else:
-        raise ValueError("Unknow algoruithm:", args.algorithm)
-
+    print('每一轮此的loss变化为：', all_loss)

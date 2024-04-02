@@ -27,7 +27,7 @@ def args_parser():
     # use iNaturalist
 
     # 通用设置：
-    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic','fedbn','focalloss','fedrs'],
+    parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic','fedbn','focalloss','fedrs', 'our'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
     parser.add_argument('--num_clients', type=int, default=20)
@@ -76,8 +76,7 @@ def args_parser():
     # FedProx
     parser.add_argument('--mu', type=float, default=0.01)
     # FedAvgM
-    (parser
-.add_argument('--init_belta', type=float, default=0.97))
+    (parser.add_argument('--init_belta', type=float, default=0.97))
 
     args = parser.parse_args()
     # 把输入的命令行内容返回作为参数，传到方法中获得结果

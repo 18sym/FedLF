@@ -64,15 +64,30 @@ from algorithm.FedIC import disalign
 from algorithm.FedBN import FedBN
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import logging
+
+
+# 配置logging
+
+# 检查目录是否存在，如果不存在，则创建它
+log_directory = './Logs/Focal_Loss/'
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+# 定义日志文件的路径
+log_file_path = os.path.join(log_directory, 'experiment.log')
+
+# 使用logging.basicConfig来配置日志
+logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+def log_and_print(message):  # 辅助函数，帮助把重要信息输出控制台的同时把这些信息记录在日志里面
+    print(message)
+    logging.info(message)
 
 def tsne_evaluation(model, dataloader, save_path):
     model.eval()
@@ -441,7 +456,7 @@ class Local(object):
 
 def Focal_Loss():
     args = args_parser()
-    print(
+    log_and_print(
         'imb_factor:{ib}, non_iid:{non_iid}\n'
         'alpha:{alpha}, gamma:{gamma}\n'
         'lr_local_training:{lr_local_training}\n'
@@ -586,31 +601,32 @@ def Focal_Loss():
         ft_few.append(few)
 
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
+
         if r % 10 == 0:
-            print("全局精确度：", re_trained_acc)
-            print()
-            print("多数类的精确度：", ft_many)
-            print()
-            print("中数类的精确度：", ft_medium)
-            print()
-            print("少数类的精确度：", ft_few)
+            log_and_print("第{}轮，全局精确度：{}".format(r,re_trained_acc))
+            log_and_print("")
+            log_and_print("多数类的精确度：{}".format(ft_many))
+            log_and_print("")
+            log_and_print("中数类的精确度：{}".format(ft_medium))
+            log_and_print("")
+            log_and_print("少数类的精确度：{}".format(ft_few))
+            log_and_print("")
 
             # 构建用于t-SNE评估的数据加载器
             test_loader = DataLoader(data_global_test, batch_size=args.batch_size_test, shuffle=False)
 
             # 构建保存路径
-            save_dir = "Dimensionality_reduction/Feature"
+            save_dir = "Dimensionality_reduction/Focal_Loss_feature"
             os.makedirs(save_dir, exist_ok=True)  # 确保目录存在，不存在则创建
             save_path = os.path.join(save_dir, f"tsne_epoch_{r}.png")
 
             # 调用t-SNE评估函数
             tsne_evaluation(global_model.syn_model, test_loader, save_path=save_path)
 
-    print("全局精确度：", re_trained_acc)
-    print()
-    print("多数类的精确度：", ft_many)
-    print()
-    print("中数类的精确度：", ft_medium)
-    print()
-    print("少数类的精确度：", ft_few)
-
+    log_and_print("训练完成后，全局精确度：{}".format(re_trained_acc))
+    log_and_print("")
+    log_and_print("多数类的精确度：{}".format(ft_many))
+    log_and_print("")
+    log_and_print("中数类的精确度：{}".format(ft_medium))
+    log_and_print("")
+    log_and_print("少数类的精确度：{}".format(ft_few))

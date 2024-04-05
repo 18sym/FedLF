@@ -75,20 +75,41 @@ import logging
 
 # 配置logging
 
-# 检查目录是否存在，如果不存在，则创建它
-log_directory = './Logs/Focal_Loss/'
-if not os.path.exists(log_directory):
-    os.makedirs(log_directory)
-# 定义日志文件的路径
-log_file_path = os.path.join(log_directory, 'experiment.log')
+def configure_logging(log_directory, log_filename):
+    if not os.path.exists(log_directory):
+        os.makedirs(log_directory)
 
-# 使用logging.basicConfig来配置日志
-logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+    log_file_path = os.path.join(log_directory, log_filename)
 
-def log_and_print(message):  # 辅助函数，帮助把重要信息输出控制台的同时把这些信息记录在日志里面
+    # 创建一个logger
+    logger = logging.getLogger(log_filename)
+    logger.setLevel(logging.INFO)
+
+    # 创建一个handler，用于写入日志文件
+    fh = logging.FileHandler(log_file_path)
+    fh.setLevel(logging.INFO)
+
+    # 创建一个handler，用于将日志输出到控制台
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+
+    # 定义handler的输出格式
+    formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+
+    # 给logger添加handler
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
+    return logger
+
+# 定义一个全局的日志对象
+focal_loss_logger = configure_logging('./Logs/Focal_Loss/', 'focal_loss_experiment.log')
+
+def log_and_print(logger, message):
+    logger.info(message)
     print(message)
-    logging.info(message)
-
 def tsne_evaluation(model, dataloader, save_path):
     model.eval()
     features = []

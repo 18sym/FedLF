@@ -30,15 +30,15 @@ def args_parser():
     parser.add_argument('--algorithm', type=str, default='creff', choices=['creff', 'fedavg', 'fedprox', 'fedic','fedbn','focalloss','fedrs', 'our'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
-    parser.add_argument('--num_clients', type=int, default=20)
-    parser.add_argument('--num_rounds', type=int, default=200,help='全局迭代次数')
+    parser.add_argument('--num_clients', type=int, default=40)
+    parser.add_argument('--num_rounds', type=int, default=200, help='全局迭代次数')
     parser.add_argument('--num_channels', type=int, default=3, help="number of channels of imges")
-    parser.add_argument('--num_epochs_local_training', type=int, default=10)  #
+    parser.add_argument('--num_epochs_local_training', type=int, default=5)  #
     parser.add_argument('--batch_size_local_training', type=int, default=32)
     parser.add_argument('--path_cifar10', type=str, default=os.path.join(path_dir, 'data/CIFAR10/'))
     parser.add_argument('--path_cifar100', type=str, default=os.path.join(path_dir, 'data/CIFAR100/'))
     parser.add_argument('--num_classes', type=int, default=10)
-    parser.add_argument('--num_online_clients', type=int, default=8)
+    parser.add_argument('--num_online_clients', type=int, default=16)
     parser.add_argument('--match_epoch', type=int, default=100)
     parser.add_argument('--crt_epoch', type=int, default=300)
     parser.add_argument('--batch_real', type=int, default=32)
@@ -57,6 +57,10 @@ def args_parser():
     parser.add_argument('--method', type=str, default='DSA', help='DC/DSA')
     parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate',
                         help='differentiable Siamese augmentation strategy')
+
+    # our
+    parser.add_argument('--lambda_2', type=float, default=0.5,help='lambda for senond loss')
+    parser.add_argument('--warm_up_epoch', type=int, default=10, help='number of warm up')
     # FedIC
     parser.add_argument('--num_data_train', type=int, default=49000)
     parser.add_argument('--total_steps', type=int, default=100)
@@ -77,6 +81,8 @@ def args_parser():
     parser.add_argument('--mu', type=float, default=0.01)
     # FedAvgM
     (parser.add_argument('--init_belta', type=float, default=0.97))
+
+
 
     args = parser.parse_args()
     # 把输入的命令行内容返回作为参数，传到方法中获得结果

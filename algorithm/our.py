@@ -396,9 +396,12 @@ class Local(object):
 
         # 加载全局参数到本地模型
         self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
-        self.local_model.train()  # 将本地模型设置为训练模式
+        self.local_model.eval()  # 将本地模型设置为评估模式
         self.num_classes = args.num_classes
         self.warm_up_epoch = args.warm_up_epoch
+        # print('热身epoch为：', self.warm_up_epoch)
+        # print('当前的全局轮次为：', r)
+
         # 初始化一个本地f_k（相当于每一次调用本地训练的时候都会初始化）
         f_k = torch.zeros(self.num_classes, 256, device=self.device)
         # print("初始化的f_k为:", f_k)
@@ -428,16 +431,15 @@ class Local(object):
                 if class_counter[i] > 0:
                     f_k[i] = feature_accumulator[i] / class_counter[i]
 
+
+        self.local_model.train()  # 将本地模型设置为训练模式
         # 训练若干周期
         for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
-            # 用来计算平均特征的两个参数
+            # 用来计算平均特征的两个参数,每遍历完整个数据集，两者就初始化为0
             feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
             class_counter = torch.zeros(self.num_classes, device=self.device)
 
-            # 创建数据加载器，用于加载本地客户端的数据批次
-            data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
-                                     batch_size=args.batch_size_local_training,  # 批次大小为输入大小
-                                     shuffle=True)  # 打乱顺序以增加随机性
+
             for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
@@ -472,6 +474,7 @@ class Local(object):
                 if r > self.warm_up_epoch:
                     # 计算loss
                     loss = self.criterion(logits, labels) + args.lambda_2 * self.second_loss(f_k, f_G)
+                    # print(loss)
                     # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                     self.optimizer.zero_grad()
                     # 反向传播：计算损失函数关于模型参数的梯度
@@ -487,37 +490,13 @@ class Local(object):
 
                 else:
                     loss = self.criterion(logits, labels)
+                    # print(loss)
+
                     # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                     self.optimizer.zero_grad()
                     # 反向传播：计算损失函数关于模型参数的梯度
                     loss.backward()
                     self.optimizer.step()  # 根据梯度更新模型参数，执行一步优化
-
-        # 在整个模型训练结束之后，根据新模型提取的所有样本的本地特征值，进行计算f_k,最后应该上传的是这个
-        f_k = torch.zeros(self.num_classes, 256, device=self.device)
-        feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
-        class_counter = torch.zeros(self.num_classes, device=self.device)
-
-        data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
-                                 batch_size=args.batch_size_local_training,  # 批次大小为输入大小
-                                 shuffle=True)  # 打乱顺序以增加随机性
-        for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
-            images, labels = data_batch  # 获取批次中的图像和标签数据
-            images, labels = images.to(self.device), labels.to(self.device)
-            images = transform_train(images)
-
-            hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
-
-            hs = hs.to(self.device)
-
-            for i in range(hs.size(0)):
-                feature_accumulator[labels[i]] += hs[i]
-                class_counter[labels[i]] += 1
-
-        with torch.no_grad():
-            for i in range(len(class_counter)):
-                if class_counter[i] > 0:
-                    f_k[i] = feature_accumulator[i] / class_counter[i]
 
         return self.local_model.state_dict(), f_k
 
@@ -657,7 +636,7 @@ def our():
     original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
                                                               args.num_classes)
     # 初始化一个全局质心 这里注意特征的维数, args.feature_dim
-    f_G = torch.randn(args.num_classes, 256, device=args.device)
+    f_G = None
     # 这里的f_G是一个矩阵，矩阵大小为num_classes x 256，每一行代表一个类的特征向量的中心
     # print("初始化的全局质心为：", f_G)
     # print('大小为：', f_G.size())
@@ -745,7 +724,7 @@ def our():
             truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
             list_clients_gradient.append(copy.deepcopy(truth_gradient))
             """
-            if r > args.warm_up_epoch:
+            if r >= args.warm_up_epoch:
                 # local update 注意这里更新只用了一部，其余在local里面
                 local_params, f_k = local_model.local_train(args, copy.deepcopy(global_params), dist, f_G, r)
                 # print(local_params)
@@ -754,38 +733,44 @@ def our():
                 # 把结果添加到f_locals中
                 f_locals.append(f_k)
 
-                # 更新自己的f_G  更新规则需要修改
-                # 引入torch.nn.CosineSimilarity模块，用于计算余弦相似度
-                sim = torch.nn.CosineSimilarity(dim=1)
-                # 意味着在每个特征的维度，也就是
+                if r == args.warm_up_epoch:
+                    # 第一轮，直接计算所有f_k的平均值
+                    f_G = torch.mean(torch.stack(f_locals), dim=0)
 
-                # 初始化临时变量tmp，用于累加加权的局部特征
-                tmp = 0
+                else:
+                    #  余弦相异度
+                    # 引入torch.nn.CosineSimilarity模块，用于计算余弦相似度
+                    sim = torch.nn.CosineSimilarity(dim=1)
+                    # 意味着在每个特征的维度，也就是
 
-                # 初始化w_sum，用于累加所有的相似度权重，以便于之后进行归一化
-                w_sum = 0
+                    # 初始化临时变量tmp，用于累加加权的局部特征
+                    tmp = 0
 
-                # 遍历f_locals中的每一个局部特征i
-                for i in f_locals:
-                    # 计算全局特征f_G与当前局部特征i之间的相似度权重
-                    # 并将其重塑为args.num_classes x 1的形状
-                    sim_weight = sim(f_G, i).reshape(args.num_classes, 1)
+                    # 初始化w_sum，用于累加所有的相似度权重，以便于之后进行归一化
+                    w_sum = 0
 
-                    # 累加当前的相似度权重到w_sum中
-                    w_sum += sim_weight
+                    # 遍历f_locals中的每一个局部特征i
+                    for i in f_locals:
+                        # 计算全局特征f_G与当前局部特征i之间的相似度权重
+                        # 并将其重塑为args.num_classes x 1的形状
+                        sim_weight = (1 - sim(f_G, i)).reshape(args.num_classes, 1)
 
-                    # 将当前的相似度权重乘以对应的局部特征，然后累加到tmp中
-                    tmp += sim_weight * i
+                        # 累加当前的相似度权重到w_sum中
+                        w_sum += sim_weight
 
-                # 使用torch.div进行元素-wise的除法操作，用累加的加权局部特征tmp除以总的相似度权重w_sum
-                # 这一步计算加权平均，更新全局特征f_G
-                f_G = torch.div(tmp, w_sum)  # 这里更新计算了新的全局特征
-                # print("更新后的全局质心为：", f_G)
-                # print('大小为：', f_G.size())
+                        # 将当前的相似度权重乘以对应的局部特征，然后累加到tmp中
+                        tmp += sim_weight * i
+
+                    # 使用torch.div进行元素-wise的除法操作，用累加的加权局部特征tmp除以总的相似度权重w_sum
+                    # 这一步计算加权平均，更新全局特征f_G
+                    f_G = torch.div(tmp, w_sum)  # 这里更新计算了新的全局特征
+                    # print("更新后的全局质心为：", f_G)
+                    # print('大小为：', f_G.size())
 
 
             else:
                 local_params, _ = local_model.local_train(args, copy.deepcopy(global_params), dist, f_G, r)
+
             # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
             list_dicts_local_params.append(copy.deepcopy(local_params))
             # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中

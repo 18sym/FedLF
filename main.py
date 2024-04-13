@@ -62,7 +62,8 @@ from algorithm.FedIC import disalign
 from algorithm.FedBN import FedBN
 from algorithm.Focal_Loss import *
 from algorithm.FedRS import FedRS
-from  algorithm.our import our
+from algorithm.our_2 import our_2
+from algorithm.test import Test
 
 
 
@@ -1012,7 +1013,9 @@ if __name__ == '__main__':
     elif args.algorithm == 'fedrs':
         FedRS()
     elif args.algorithm == 'our':
-        our()
+        our_2()
+    elif args.algorithm == 'test':
+        Test()
     else:
         raise ValueError("Unknow algoruithm:", args.algorithm)
 

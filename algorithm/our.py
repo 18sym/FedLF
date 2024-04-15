@@ -409,6 +409,8 @@ class Local(object):
                                      batch_size=args.batch_size_local_training,  # 批次大小为输入大小
                                      shuffle=True)  # 打乱顺序以增加随机性
             for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
+                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
+                self.optimizer.zero_grad()
 
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
@@ -462,8 +464,7 @@ class Local(object):
                 loss = loss1 + loss2 * 0.5
                 logger.info('总的loss为：{}'.format(loss))
                 # print(loss.item())
-                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
-                self.optimizer.zero_grad()
+
                 # 反向传播：计算损失函数关于模型参数的梯度
                 loss.backward()
                 # 根据梯度更新模型参数，执行一步优化

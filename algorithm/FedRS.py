@@ -382,6 +382,7 @@ class Local(object):
 
                 # 计算loss
                 loss = self.criterion(logits, labels)
+                print('loss为：', loss)
                 # print(loss.item())
                 # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                 self.optimizer.zero_grad()

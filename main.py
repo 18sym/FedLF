@@ -62,8 +62,8 @@ from algorithm.FedIC import disalign
 from algorithm.FedBN import FedBN
 from algorithm.Focal_Loss import *
 from algorithm.FedRS import FedRS
-from algorithm.our_2 import our_2
 from algorithm.test import Test
+from algorithm.our import our
 
 
 
@@ -893,6 +893,7 @@ def FedProx():
     ft_medium = []
     ft_few = []
 
+
     # 选择一个临时线性模型，用于申城特征和程参数
     temp_model = nn.Linear(256, 10).to(args.device)
     syn_params = temp_model.state_dict()
@@ -1013,7 +1014,7 @@ if __name__ == '__main__':
     elif args.algorithm == 'fedrs':
         FedRS()
     elif args.algorithm == 'our':
-        our_2()
+        our()
     elif args.algorithm == 'test':
         Test()
     else:

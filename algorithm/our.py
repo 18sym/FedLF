@@ -30,7 +30,7 @@ from torch import stack, max, eq, no_grad, tensor, unsqueeze, split
 from torch.optim import SGD
 # 导入SGD实现随机梯度下降优化算法
 
-from torch.nn import CrossEntropyLoss, MSELoss
+from torch.nn import CrossEntropyLoss
 # 用于计算交叉熵损失，长用于多分类问题
 
 from torch.utils.data.dataloader import DataLoader
@@ -59,49 +59,48 @@ import time
 
 from Dataset.param_aug import DiffAugment
 # 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
+from algorithm.FedIC import disalign
+from algorithm.FedBN import FedBN
 import os
 import logging
-import torch.nn.functional as F
-
-torch.autograd.set_detect_anomaly(True)
 
 
-# 配置logging
-def configure_logging(log_directory, log_filename):
-    if not os.path.exists(log_directory):
-        os.makedirs(log_directory)
+def setup_logging():
+    # 创建日志目录
+    log_dir = './Logs/our/'
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
 
-    log_file_path = os.path.join(log_directory, log_filename)
+    # 日志文件的完整路径
+    log_file = os.path.join(log_dir, 'our_experiment.log')
 
-    # 创建一个logger
-    logger = logging.getLogger('my_logger')
-    logger.setLevel(logging.INFO)
+    # 创建 logger
+    logger = logging.getLogger('our_logger')
+    logger.setLevel(logging.DEBUG)  # 可以调整为INFO, WARNING, ERROR, CRITICAL等
 
-    # 创建一个handler，用于写入日志文件
-    fh = logging.FileHandler(log_file_path)
-    fh.setLevel(logging.INFO)
+    # 创建一个 file handler 写日志到文件
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_format)
 
-    # 创建一个handler，用于将日志输出到控制台
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
+    # 创建一个 stream handler 输出日志到控制台
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.DEBUG)
+    stream_format = logging.Formatter('%(message)s')  # 控制台输出不需要太详细
+    stream_handler.setFormatter(stream_format)
 
-    # 定义handler的输出格式
-    formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
-    fh.setFormatter(formatter)
-    ch.setFormatter(formatter)
-
-    # 给logger添加handler
-    logger.addHandler(fh)
-    logger.addHandler(ch)
+    # 添加 handlers 到 logger
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
 
     return logger
 
-# 定义一个全局的日志对象
-our_logger = configure_logging('./Logs/our/', 'our_experiment.log')
 
-def log_and_print(message):
-    our_logger.info(message)
-    # print(message)  # 这行代码其实是多余的，因为已经有一个handler是输出到控制台的
+
+
+
+
 
 class Global(object):
     def __init__(self,
@@ -306,13 +305,10 @@ class Local(object):
         self.data_client = data_client  # 客户端数据集
 
         self.device = args.device  # 设备
-        self.num_classes = args.num_classes
         self.class_compose = class_list  # 类别列表
-        self.warm_up_epoch = args.warm_up_epoch  # 热身阶段
+        self.num_classes = args.num_classes
 
         self.criterion = CrossEntropyLoss().to(args.device)  # 交叉熵损失函数
-        self.second_loss = F.l1_loss
-
 
         # 初始化本地模型，使用 ResNet 架构
         self.local_model = ResNet_cifar(resnet_size=8, scaling=4,
@@ -389,8 +385,8 @@ class Local(object):
             truth_gradient_avg[i] = gw_real_temp
         return truth_gradient_avg
 
-
-    def local_train(self, args, global_params, dist, f_G, r):
+    def local_train(self, args, global_params, dist, f_G, logger):
+        logger.info('-------------------------------本地训练开始----------------------------------------')
         # 本地训练函数
         transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
             transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
@@ -398,62 +394,29 @@ class Local(object):
 
         # 加载全局参数到本地模型
         self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
-        self.num_classes = args.num_classes
-        self.warm_up_epoch = args.warm_up_epoch
-
-        data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
-                                 batch_size=args.batch_size_local_training,  # 批次大小为输入大小
-                                 shuffle=True)  # 打乱顺序以增加随机性
-
-        # 初始化一个本地f_k（相当于每一次调用本地训练的时候都会初始化）
-
-        f_k = torch.zeros(self.num_classes, 256, device=self.device)
-        # print("初始化的f_k为:", f_k)
-
-        # 这里应该有个f_k的初始化，而不是每一次调用本地训练的时候，f_k都初始化为0，计算的第一个loss，f_k都是为0
-        feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
-        class_counter = torch.zeros(self.num_classes, device=self.device)
-
-        for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
-            images, labels = data_batch  # 获取批次中的图像和标签数据
-            images, labels = images.to(self.device), labels.to(self.device)
-            images = transform_train(images)
-
-            hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
-
-            hs = hs.to(self.device)
-
-            for i in range(hs.size(0)):
-                feature_accumulator[labels[i]] += hs[i].detach()
-                class_counter[labels[i]] += 1
-
-        for i in range(len(class_counter)):
-            if class_counter[i] > 0:
-                f_k[i] = feature_accumulator[i] / class_counter[i].detach()
-
         self.local_model.train()  # 将本地模型设置为训练模式
+
         # 训练若干周期
-        for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
-
+        for a in range(args.num_epochs_local_training):  # 迭代训练多个周期
+            logger.info('------------------------这是第{}个本地训练周期------------------------'.format(a))
+            f_k = torch.zeros(self.num_classes, 256, device=self.device)
+            class_count = torch.zeros(self.num_classes, device=self.device)
+            logger.info('当前本地epoch轮次的初始化f_k为：{}'.format(f_k))
+            logger.info("当前本地epoch轮次本地原型初始化为：{}".format(f_k.shape))
+            logger.info('当前本地epoch轮次的初始化计数器为：{}'.format(class_count.tolist()))
             # 创建数据加载器，用于加载本地客户端的数据批次
-            feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
-            class_counter = torch.zeros(self.num_classes, device=self.device)
-
             data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
                                      batch_size=args.batch_size_local_training,  # 批次大小为输入大小
                                      shuffle=True)  # 打乱顺序以增加随机性
             for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
+
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
                 images = transform_train(images)
+                # print('这个batch内的label为：', labels.tolist())
 
                 # FedRS关键
                 hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
-                # 累积特征和样本数
-                for i in range(hs.size(0)):
-                    feature_accumulator[labels[i]] += hs[i]
-                    class_counter[labels[i]] += 1
-
                 ws = self.local_model.classifier.weight
                 hs, ws = hs.to(self.device), ws.to(self.device)
 
@@ -466,141 +429,67 @@ class Local(object):
 
                 logits = cdist * hs.mm(ws.transpose(0, 1))
 
-                if r > self.warm_up_epoch + 1:
-                    # print(f_k, f_G)
-                    # 计算loss
-                    # loss_1 = self.criterion(logits, labels)
-                    # loss_2 = args.lambda_2 * self.second_loss(f_k, f_G, reduction='mean')
-                    loss = self.criterion(logits, labels) + args.lambda_2 * self.second_loss(f_k, f_G)
-                    print('第一个loss为：', self.criterion(logits, labels))
-                    print('第二个loss为：', args.lambda_2 * self.second_loss(f_k, f_G, reduction='mean'))
-                    print('两个loss加起来：', loss)
-                    # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
+                # 更新本地f_k
+                for i in range(self.num_classes):
+                    mask = labels == i
+                    if mask.any():
+                        f_k[i] += hs[mask].sum(0).detach()  # 累积特征和
+                        class_count[i] += mask.sum()  # 更新类计数
 
-                    # 反向传播：计算损失函数关于模型参数的梯度
-                    self.optimizer.zero_grad()
+                logger.info('经过一个batch更新后的f_k大小为：{}'.format(f_k.shape))
+                logger.info('经过一个batch更新后的f_k为：{}'.format(f_k))
+                logger.info('经过一个batch更新后的class_count大小为:{}'.format(class_count.shape))
+                logger.info('经过一个batch更新后的class_count为:{}'.format(class_count.tolist()))
 
-                    loss.backward(retain_graph=True)
-                    self.optimizer.step()  # 根据梯度更新模型参数，执行一步优化
+                # 对每个batch内进行平均f_k,避免除以0的情况
+                f_k_mean = torch.zeros_like(f_k)  # 初始化为零
+                valid_class_mask = class_count > 0
+                # print(class_count[valid_class_mask].unsqueeze(1))
+                f_k_mean[valid_class_mask] = f_k[valid_class_mask] / class_count[valid_class_mask].unsqueeze(1)
+                logger.info("经过一个batch后的f_k_mean的值为：{}".format(f_k_mean))
 
+                loss_l1 = nn.L1Loss()
+                # 计算loss
+                loss1 = self.criterion(logits, labels)
+                if (f_G == 0).all():
 
-                    f_k_temp = f_k.clone().detach()  # 创建f_k的副本并从计算图中分离
-                    for i in range(self.num_classes):
-                        if class_counter[i] > 0:
-                            f_k_temp[i] = feature_accumulator[i] / (class_counter[i] + 1e-8)
-                    f_k = f_k_temp
-
+                    loss2 = 0
                 else:
-                    loss = self.criterion(logits, labels)
-                    # print(loss)
 
-                    # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
-                    # 反向传播：计算损失函数关于模型参数的梯度
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()  # 根据梯度更新模型参数，执行一步优化
-
-
-                    f_k_temp = f_k.clone().detach()  # 创建f_k的副本并从计算图中分离
-                    for i in range(self.num_classes):
-                        if class_counter[i] > 0:
-                            f_k_temp[i] = feature_accumulator[i] / (class_counter[i] + 1e-8)
-                    f_k = f_k_temp
-                # print('跟新的后f_k为：', f_k)
-
-        return self.local_model.state_dict(), f_k
-
-    """
-    # 如果在服务器上使用多精度混合加速训练过程：
-        import torch
-        from torch.cuda.amp import GradScaler, autocast  # 导入必要的库
-
-        def local_train(self, args, global_params, dist, f_G):
-        # 本地训练函数
-        transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
-            transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
-            transforms.RandomHorizontalFlip()])  # 随机水平翻转
-        
-        # 加载全局参数到本地模型
-        self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
-        self.local_model.train()  # 将本地模型设置为训练模式
-        self.num_classes = args.num_classes
-        # 初始化一个本地f_k
-        f_k = torch.zeros(self.num_classes, 256, device=self.device)
-        # 初始化梯度缩放器
-        scaler = GradScaler()
-        
-        # 训练若干周期
-        for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
-            #
-            feature_accumulator = torch.zeros(self.num_classes, 256, device=self.device)
-            class_counter = torch.zeros(self.num_classes, device=self.device)
-        
-            # 创建数据加载器，用于加载本地客户端的数据批次
-            data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
-                                     batch_size=args.batch_size_local_training,  # 批次大小为输入大小
-                                     shuffle=True)  # 打乱顺序以增加随机性
-            for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
-                images, labels = data_batch  # 获取批次中的图像和标签数据
-                images, labels = images.to(self.device), labels.to(self.device)
-                images = transform_train(images)
-        
-                # 使用自动混合精度
-                with autocast():  # 将这个块内的运算自动转为混合精度
-                    hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
-        
-                    ws = self.local_model.classifier.weight
-                    ws = ws.to(self.device)
-        
-                    cdist = dist / dist.max()
-                    cdist = cdist.to(self.device)
-                    cdist = cdist * (1.0 - args.rs_alpha) + args.rs_alpha
-        
-                    cdist = cdist.reshape((1, -1))
-        
-                    logits = cdist * hs.mm(ws.transpose(0, 1))
-        
-                    # 计算loss
-                    loss = self.criterion(logits, labels) + self.second_loss(f_k, f_G)
-        
-                # 反向传播
+                    loss2 = loss_l1(f_k_mean, f_G)  # 这个是不是有问题
+                logger.info('第一个loss为：{}'.format(loss1))
+                logger.info('第二个loss为：{}'.format(loss2))
+                loss = loss1 + loss2 * 0.5
+                logger.info('总的loss为：{}'.format(loss))
+                # print(loss.item())
+                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
                 self.optimizer.zero_grad()
-                scaler.scale(loss).backward()  # 使用缩放器来放大梯度，避免在混合精度训练中梯度过小而消失
-                scaler.step(self.optimizer)  # 根据放大的梯度更新模型参数
-                scaler.update()  # 准备下一轮放大
-        
-                # 累积特征和样本数
-                with torch.no_grad():  # 在这个模式下，所有的计算都不会生成梯度
-                    for i in range(hs.size(0)):
-                        feature_accumulator[labels[i]] += hs[i].float()  # 使用.float()确保高精度
-                        class_counter[labels[i]] += 1
-        
-                    # 在每个周期结束后，计算每个类别的平均特征
-                    f_k_temp = f_k.clone().detach()  # 创建f_k的副本并从计算图中分离
-                    for i in range(self.num_classes):
-                        if class_counter[i] > 0:
-                            f_k_temp[i] = feature_accumulator[i] / class_counter[i]
-                    f_k = f_k_temp
-        
+                # 反向传播：计算损失函数关于模型参数的梯度
+                loss.backward()
+                # 根据梯度更新模型参数，执行一步优化
+                self.optimizer.step()
+
+            f_k = f_k_mean
+            logger.info("经过一个epoch本地训练完成后的f_k大小：{}".format(f_k))
+
         return self.local_model.state_dict(), f_k
-    """
 
 def our():
+    logger = setup_logging()
     args = args_parser()
-    log_and_print(
-        'imb_factor:{ib}, non_iid:{non_iid}, rs_alpha:{rs_alpha}, lambda_2:{lambda_2}\n'
+    logger.info(
+        'imb_factor:{ib}, non_iid:{non_iid}, rs_alpha:{rs_alpha}, warm_up_epoch:{warm_up_epoch}\n'
         'lr_local_training:{lr_local_training}\n'
-        'num_rounds:{num_rounds},num_epochs_local_training:{num_epochs_local_training},batch_size_local_training:{batch_size_local_training}, warm_up_epoch:{warm_up_epoch}\n'
+        'num_rounds:{num_rounds},num_epochs_local_training:{num_epochs_local_training},batch_size_local_training:{batch_size_local_training}\n'
         'num_online_clients:{num_online_clients}\n'.format(
             ib=args.imb_factor,
             non_iid=args.non_iid_alpha,
             rs_alpha=args.rs_alpha,
-            lambda_2=args.lambda_2,
+            warm_up_epoch=args.warm_up_epoch,
             lr_local_training=args.lr_local_training,
             num_rounds=args.num_rounds,
             num_epochs_local_training=args.num_epochs_local_training,
             batch_size_local_training=args.batch_size_local_training,
-            warm_up_epoch=args.warm_up_epoch,
             num_online_clients=args.num_online_clients))
 
     random_state = np.random.RandomState(args.seed)
@@ -608,7 +497,7 @@ def our():
     # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
     transform_all = transforms.Compose([
         transforms.ToTensor(),  # 将图片转为张量
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),  # 暂定不用使用creff里面的，使用Imagenet的
     ])  # 对图像进行归一化处理
     # 根据命令行参数加载数据集
     if args.dataset == 'cifar10':
@@ -643,14 +532,6 @@ def our():
     # 展示每个客户端的数据分布情况，并返回原始的数据字典
     original_dict_per_client = show_clients_data_distribution(data_local_training, list_client2indices,
                                                               args.num_classes)
-    # 初始化一个全局质心 这里注意特征的维数, args.feature_dim
-    f_G = torch.randn(args.num_classes, 256 , device=args.device)
-    # 这里的f_G是一个矩阵，矩阵大小为num_classes x 256，每一行代表一个类的特征向量的中心
-    # print("初始化的全局质心为：", f_G)
-    # print('大小为：', f_G.size())
-
-
-
     # 全局模型的初始化,其中包括类别数、设备、参数等等
     global_model = Global(num_classes=args.num_classes,
                           device=args.device,
@@ -665,6 +546,8 @@ def our():
     ft_many = []
     ft_medium = []
     ft_few = []
+    f_G = torch.zeros(args.num_classes, 256, device=args.device)
+    logger.info('初始化f_G的大小为：{}'.format(f_G.shape))
     # 初始化空列表，用于存储重新训练后的准确率
 
     # 选择一个临时线性模型，用于申城特征和程参数
@@ -700,16 +583,16 @@ def our():
         online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
         # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
         # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
+        logger.info('在线客户为：{}'.format(online_clients))
 
         list_clients_gradient = []  # 存储客户端的梯度信息
         list_dicts_local_params = []  # 存储每个客户端的本地参数信息
         list_nums_local_data = []  # 存储每个客户端的本地数量信息
-        f_locals = []  # 存储每个用户的特征的信息
-        # print("初始化的列表，用来存储f_k:", f_locals)
-
+        f_locals = []  # 存储f_k
 
         # local training
         for client in online_clients:
+            logger.info(' 当前用户为：{}'.format(client))
 
             # FedRS 需要获取当前客户端的分布情况
             cnts = torch.tensor(original_dict_per_client[client])
@@ -732,54 +615,16 @@ def our():
             truth_gradient = local_model.compute_gradient(copy.deepcopy(syn_feature_params), args)
             list_clients_gradient.append(copy.deepcopy(truth_gradient))
             """
-            local_params, f_k = local_model.local_train(args, copy.deepcopy(global_params), dist, f_G, r)
-            # print(local_params)
-            # 本地训练不仅要上传model，还要上传自己的本地f_k
 
-            # 把结果添加到f_locals中
-            f_locals.append(f_k)
+            # local update 注意这里更新只用了一部，其余在local里面
+            local_params, f_k = local_model.local_train(args, copy.deepcopy(global_params), dist, copy.deepcopy(f_G).to(args.device),logger)
+            # print(local_params)
+            f_locals.append(f_k)  # 原来定义好的空的的列表
+            logger.info('加入一个用户后的f_locals长度为：{}'.format(len(f_locals)))
+            logger.info('里面的内容为：{}'.format(f_locals))
             # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
             list_dicts_local_params.append(copy.deepcopy(local_params))
             # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
-
-        # 判断f_G的更新
-        if r > args.warm_up_epoch:
-
-            if r == args.warm_up_epoch + 1:
-                # 第一轮，直接计算所有f_k的平均值
-                # print(len(f_locals))
-                # print(f_locals)
-                f_G = torch.mean(torch.stack(f_locals), dim=0)
-
-            else:
-                #  余弦相异度
-                # 引入torch.nn.CosineSimilarity模块，用于计算余弦相似度
-                sim = torch.nn.CosineSimilarity(dim=1)
-                # 意味着在每个特征的维度，也就是
-
-                # 初始化临时变量tmp，用于累加加权的局部特征
-                tmp = 0
-
-                # 初始化w_sum，用于累加所有的相似度权重，以便于之后进行归一化
-                w_sum = 0
-
-                # 遍历f_locals中的每一个局部特征i
-                for i in f_locals:
-                    # 计算全局特征f_G与当前局部特征i之间的相似度权重
-                    # 并将其重塑为args.num_classes x 1的形状
-                    sim_weight = (sim(f_G, i)).reshape(args.num_classes, 1)
-
-                    # 累加当前的相似度权重到w_sum中
-                    w_sum += sim_weight
-
-                    # 将当前的相似度权重乘以对应的局部特征，然后累加到tmp中
-                    tmp += sim_weight * i
-
-                # 使用torch.div进行元素-wise的除法操作，用累加的加权局部特征tmp除以总的相似度权重w_sum
-                # 这一步计算加权平均，更新全局特征f_G
-                f_G = torch.div(tmp, w_sum)  # 这里更新计算了新的全局特征
-                # print("更新后的全局质心为：", f_G)
-                # print('大小为：', f_G.size())
 
         # aggregating local models with FedAvg
         fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
@@ -789,6 +634,33 @@ def our():
         syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
                                                               args.batch_size_local_training)
         """
+
+        if r > args.warm_up_epoch:
+            if r == args.warm_up_epoch + 1:
+                # Update f_G
+                # 计算所有本地特征向量 f_k 的平均值
+                sum_f_k = torch.zeros_like(f_locals[0])  # 初始化和向量，假设所有 f_k 的维度相同
+                for f_k in f_locals:
+                    sum_f_k += f_k  # 累加所有本地特征向量
+
+                # 计算平均值，f_locals 的长度即客户端的数量
+                f_G = sum_f_k / len(f_locals)
+                logger.info('更新过后的f_G的大小为：{}'.format(f_G.shape))
+                logger.info('更新过的f_G为：{}'.format(f_G))
+
+            else:
+                # Update f_G(热身后的第二轮)
+                sim = torch.nn.CosineSimilarity(dim=1)  # 全局质心的更新方式 就是加权取平均
+                tmp = 0
+                w_sum = 0
+                for i in f_locals:
+                    sim_weight = sim(f_G, i).reshape(args.num_classes, 1)
+                    w_sum += sim_weight
+                    tmp += sim_weight * i
+                f_G = torch.div(tmp, w_sum)
+                logger.info('更新过后的f_G的大小为：{}'.format(f_G.shape))
+                logger.info('更新过的f_G为：{}'.format(f_G))
+
         # global eval
         one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
         re_trained_acc.append(one_re_train_acc)
@@ -798,33 +670,22 @@ def our():
         ft_many.append(many)
         ft_medium.append(medium)
         ft_few.append(few)
+        logger.info("-----------------------------------本轮epoch全局迭代结束--------------------------------")
 
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
         if r % 10 == 0:
-            if r <= args.warm_up_epoch:
-                log_and_print("第{}轮，还未使用warm_up，全局精确度：{}".format(r, re_trained_acc))
-                log_and_print("")
-                log_and_print("多数类的精确度：{}".format(ft_many))
-                log_and_print("")
-                log_and_print("中数类的精确度：{}".format(ft_medium))
-                log_and_print("")
-                log_and_print("少数类的精确度：{}".format(ft_few))
-                log_and_print("")
-            else:
-                log_and_print("第{}轮，全局精确度：{}".format(r, re_trained_acc))
-                log_and_print("")
-                log_and_print("多数类的精确度：{}".format(ft_many))
-                log_and_print("")
-                log_and_print("中数类的精确度：{}".format(ft_medium))
-                log_and_print("")
-                log_and_print("少数类的精确度：{}".format(ft_few))
-                log_and_print("")
+            print("全局精确度：", re_trained_acc)
+            print()
+            print("多数类的精确度：", ft_many)
+            print()
+            print("中数类的精确度：", ft_medium)
+            print()
+            print("少数类的精确度：", ft_few)
 
-    log_and_print("训练完成后，全局精确度：{}".format(re_trained_acc))
-    log_and_print("")
-    log_and_print("多数类的精确度：{}".format(ft_many))
-    log_and_print("")
-    log_and_print("中数类的精确度：{}".format(ft_medium))
-    log_and_print("")
-    log_and_print("少数类的精确度：{}".format(ft_few))
-
+    print("全局精确度：", re_trained_acc)
+    print()
+    print("多数类的精确度：", ft_many)
+    print()
+    print("中数类的精确度：", ft_medium)
+    print()
+    print("少数类的精确度：", ft_few)

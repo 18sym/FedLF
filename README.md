@@ -1,4 +1,6 @@
+# FedLF
 
+Official codes for ACML '24 research paper: FedLF: Adaptive Logit Adjustment and Feature Optimization in Federated Long-Tailed Learning.
 
 ### Dependencies
 

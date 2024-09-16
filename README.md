@@ -45,7 +45,7 @@ The following arguments to the `./options.py` file control the important paramet
 
 ### Usage
 
-Here is an example to run CReFF on CIFAR-10 with imb_factor=0.01:
+Here is an example to run FedLF on CIFAR-10 with imb_factor=0.01:
 
 ```python
 python main.py --num_classrs=10 \ 
@@ -64,7 +64,7 @@ python main.py --num_classrs=10 \
 --imb_factor=0.01 \ 
 ```
 
-In Linux environments, here is an example to run CReFF on CIFAR-10 with imb_factor=0.01 and save the output log to file:
+In Linux environments, here is an example to run CFedLF on CIFAR-10 with imb_factor=0.01 and save the output log to file:
 
 ```python
 python main.py --num_classrs=10 \ 

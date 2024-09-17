@@ -32,7 +32,6 @@ The following arguments to the `./options.py` file control the important paramet
 | `num_rounds`                | Number of communication rounds.                   |
 | `num_epochs_local_training` | Number of local epochs.                           |
 | `batch_size_local_training` | Batch size of local training.                     |
-| `ipc`                       | Number of federated features per class.           |
 | `lr_local_training`         | Learning rate of client updating.                 |
 | `non_iid_alpha`             | Control the degree of heterogeneity.              |
 | `imb_factor`                | Control the degree of imbalance.                  |

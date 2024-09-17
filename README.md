@@ -43,7 +43,8 @@ The following arguments to the `./options.py` file control the important paramet
 Here is an example to run FedLF on CIFAR-10 with imb_factor=0.01:
 
 ```python
-python main.py --num_classrs=10 \ 
+python main.py --algorithm fedlf \
+--num_classrs=10 \ 
 --num_clients=20 \
 --num_online_clients=8 \
 --num_rounds=200 \
@@ -62,7 +63,8 @@ python main.py --num_classrs=10 \
 In Linux environments, here is an example to run CFedLF on CIFAR-10 with imb_factor=0.01 and save the output log to file:
 
 ```python
-python main.py --num_classrs=10 \ 
+python main.py --algorithm fedlf \
+--num_classrs=10 \ 
 --num_clients=20 \
 --num_online_clients=8 \
 --num_rounds=200 \

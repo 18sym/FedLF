@@ -50,12 +50,7 @@ python main.py --algorithm fedlf \
 --num_rounds=200 \
 --num_epochs_local_training=10 \
 --batch_size_local_training=32 \
---match_epoch=100 \
---ctr_epoch=300 \
---ipc=100 \
 --lr_local_training=0.1 \
---lr_feature=0.1 \
---lr_net=0.01 \
 --non-iid_alpha=0.5 \
 --imb_factor=0.01 \ 
 ```
@@ -70,12 +65,7 @@ python main.py --algorithm fedlf \
 --num_rounds=200 \
 --num_epochs_local_training=10 \
 --batch_size_local_training=32 \
---match_epoch=100 \
---ctr_epoch=300 \
---ipc=100 \
 --lr_local_training=0.1 \
---lr_feature=0.1 \
---lr_net=0.01 \
 --non-iid_alpha=0.5 \
 --imb_factor=0.01 | tee creff_imb001_cifar10lt.log
 ```

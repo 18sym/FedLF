@@ -70,4 +70,4 @@ python main.py --algorithm fedlf \
 --imb_factor=0.01 | tee creff_imb001_cifar10lt.log
 ```
 # Note:
-In addition, we will launch a Federated Long-Tailed Learning algorithm library. Please stay tuned.
+In addition, we will launch a Federated Long-Tailed Learning algorithm library. Please stay tuned. https://github.com/18sym/Federated-Long-Tailed-Learning

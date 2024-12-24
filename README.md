@@ -1,4 +1,6 @@
+# FedLF
 
+Official codes for ACML '24 research paper: FedLF: Adaptive Logit Adjustment and Feature Optimization in Federated Long-Tailed Learning.
 
 ### Dependencies
 
@@ -30,12 +32,7 @@ The following arguments to the `./options.py` file control the important paramet
 | `num_rounds`                | Number of communication rounds.                   |
 | `num_epochs_local_training` | Number of local epochs.                           |
 | `batch_size_local_training` | Batch size of local training.                     |
-| `match_epoch`               | Number of optimizing federated features.          |
-| `crt_epoch`                 | Number of re-training classifier.                 |
-| `ipc`                       | Number of federated features per class.           |
 | `lr_local_training`         | Learning rate of client updating.                 |
-| `lr_feature`                | Learning rate of federated features optimization. |
-| `lr_net`                    | Learning rate of classifier re-training           |
 | `non_iid_alpha`             | Control the degree of heterogeneity.              |
 | `imb_factor`                | Control the degree of imbalance.                  |
 
@@ -43,10 +40,11 @@ The following arguments to the `./options.py` file control the important paramet
 
 ### Usage
 
-Here is an example to run CReFF on CIFAR-10 with imb_factor=0.01:
+Here is an example to run FedLF on CIFAR-10 with imb_factor=0.01:
 
 ```python
-python main.py --num_classrs=10 \ 
+python main.py --algorithm fedlf \
+--num_classrs=10 \ 
 --num_clients=20 \
 --num_online_clients=8 \
 --num_rounds=200 \
@@ -62,10 +60,11 @@ python main.py --num_classrs=10 \
 --imb_factor=0.01 \ 
 ```
 
-In Linux environments, here is an example to run CReFF on CIFAR-10 with imb_factor=0.01 and save the output log to file:
+In Linux environments, here is an example to run CFedLF on CIFAR-10 with imb_factor=0.01 and save the output log to file:
 
 ```python
-python main.py --num_classrs=10 \ 
+python main.py --algorithm fedlf \
+--num_classrs=10 \ 
 --num_clients=20 \
 --num_online_clients=8 \
 --num_rounds=200 \
@@ -80,4 +79,5 @@ python main.py --num_classrs=10 \
 --non-iid_alpha=0.5 \
 --imb_factor=0.01 | tee creff_imb001_cifar10lt.log
 ```
-
+# Note:
+In addition, we will launch a Federated Long-Tailed Learning algorithm library. Please stay tuned.

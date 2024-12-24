@@ -1,105 +1,81 @@
+from Model.log_model import setup_logging
 from torchvision import datasets
-# datasets 模块用于，加载和使用预定义的数据集
-
 from torchvision.transforms import ToTensor, transforms
-# ToTensor模块用于将PIL图片或者numpy数组转化为Tensor
-# transforms模块提供了一系列的图像比那换操作，可用于数据增强
-
 from options import args_parser
-# argus_parser，用于解析命令行参数
-
 from Dataset.long_tailed_cifar10 import train_long_tail
-# 自己定义的函数，可用于处理长尾数据集CIFAR-10
-
 from Dataset.dataset import classify_label, show_clients_data_distribution, Indices2Dataset, TensorDataset, \
     get_class_num
-# 从自己定义的包中导入定义文件的函数
-
 from Dataset.sample_dirichlet import clients_indices
-# 导入数据采样方法
-
-from Dataset.Gradient_matching_loss import match_loss
-# 用来计算梯度损失
-
 import numpy as np
-# 导入numpy，用于执行各种计算的库
-
 from torch import stack, max, eq, no_grad, tensor, unsqueeze, split
-# 从 torch包导入多个函数和上下文管理器，用于张量操作、比较、禁用梯度计算率
-
 from torch.optim import SGD
-# 导入SGD实现随机梯度下降优化算法
-
 from torch.nn import CrossEntropyLoss
-# 用于计算交叉熵损失，长用于多分类问题
-
 from torch.utils.data.dataloader import DataLoader
-# DataLoader用于高效加载数据
-
 from Model.Resnet8 import ResNet_cifar
-# 可能是为CIFAR数据集定制的ResNet8 模型
-
 from tqdm import tqdm
-# 从tqdm 导入 tqdm，用于循环显示进度
-
 import copy
-# 导入copy模块，用于执行对象的浅复制和深复制
-
-import torch
-# 导入torch库，pytorch的核心库，用于张量计算和自动微分
-
-import random
-# 用于生成随机数
-
 import torch.nn as nn
-# 导入random模块，并重命名为nn，提供了构建神经网络的类和函数
-
 import time
-# 导入时间模块，用于测量时间
-
 from Dataset.param_aug import DiffAugment
-# 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
-from algorithm.FedIC import disalign
-from algorithm.FedBN import FedBN
+import torch.nn.functional as F
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 import os
-import logging
+import torch
 
 
-def setup_logging():
-    # 创建日志目录
-    log_dir = './Logs/our/'
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+def tsne_evaluation(model, dataloader, save_path):
+    model.eval()
+    features = []
+    labels = []
+    with torch.no_grad():
+        for inputs, targets in dataloader:
+            inputs = inputs.cuda()
+            output, _ = model(inputs)
+            features.append(output.cpu().numpy())
+            labels.append(targets.numpy())
+    features = np.concatenate(features)
+    labels = np.concatenate(labels)
 
-    # 日志文件的完整路径
-    log_file = os.path.join(log_dir, 'our_experiment.log')
+    tsne = TSNE(n_components=2, random_state=0)
+    projected_features = tsne.fit_transform(features)
 
-    # 创建 logger
-    logger = logging.getLogger('our_logger')
-    logger.setLevel(logging.DEBUG)  # 可以调整为INFO, WARNING, ERROR, CRITICAL等
-
-    # 创建一个 file handler 写日志到文件
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-    file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(file_format)
-
-    # 创建一个 stream handler 输出日志到控制台
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.DEBUG)
-    stream_format = logging.Formatter('%(message)s')  # 控制台输出不需要太详细
-    stream_handler.setFormatter(stream_format)
-
-    # 添加 handlers 到 logger
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
-
-    return logger
+    plt.figure(figsize=(10, 10))
+    for i in range(10):
+        indices = labels == i
+        plt.scatter(projected_features[indices, 0], projected_features[indices, 1], label=str(i))
+    plt.legend()
+    plt.savefig(save_path)
+    plt.close()
 
 
+# 第三个损失函数的定义
+class DecorrLoss(nn.Module):
 
+    def __init__(self):
+        super(DecorrLoss, self).__init__()
+        self.eps = 1e-8
 
+    def _off_diagonal(self, mat):
+        # return a flattened view of the off-diagonal elements of a square matrix
+        n, m = mat.shape
+        assert n == m
+        return mat.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
+    def forward(self, x):
+        N, C = x.shape
+        if N == 1:
+            return 0.0
+
+        x = x - x.mean(dim=0, keepdim=True)
+        x = x / torch.sqrt(self.eps + x.var(dim=0, keepdim=True))
+
+        corr_mat = torch.matmul(x.t(), x)
+
+        loss = (self._off_diagonal(corr_mat).pow(2)).mean()
+        loss = loss / N
+
+        return loss
 
 
 class Global(object):
@@ -228,8 +204,10 @@ class Global(object):
 
         # 定义类别的阈值
         majority_threshold = 1500
-        minority_threshold = 200
-
+        # 0.01  0.02
+        # minority_threshold = 200
+        # 0.1
+        minority_threshold = 600
         # 初始化精确度计算所需的变量
         num_corrects_majority, num_samples_majority = 0, 0
         num_corrects_medium, num_samples_medium = 0, 0
@@ -299,16 +277,15 @@ class Local(object):
                  data_client,
                  class_list: int):
         # 初始化函数，接受数据集和类别列表作为参数
-
         args = args_parser()  # 解析命令行参数
 
         self.data_client = data_client  # 客户端数据集
 
         self.device = args.device  # 设备
         self.class_compose = class_list  # 类别列表
-        self.num_classes = args.num_classes
 
         self.criterion = CrossEntropyLoss().to(args.device)  # 交叉熵损失函数
+        self.feddecorr = DecorrLoss()
 
         # 初始化本地模型，使用 ResNet 架构
         self.local_model = ResNet_cifar(resnet_size=8, scaling=4,
@@ -385,8 +362,7 @@ class Local(object):
             truth_gradient_avg[i] = gw_real_temp
         return truth_gradient_avg
 
-    def local_train(self, args, global_params, dist, f_G, logger):
-        logger.info('-------------------------------本地训练开始----------------------------------------')
+    def local_train(self, args, global_params, dist):
         # 本地训练函数
         transform_train = transforms.Compose([  # 定义图像预处理操作，包括随即裁剪和水平翻转
             transforms.RandomCrop(32, padding=4),  # 随机裁剪，参数为图像裁剪后的大小和填充大小
@@ -396,27 +372,53 @@ class Local(object):
         self.local_model.load_state_dict(global_params)  # 使用全局参数更新本地模型的参数
         self.local_model.train()  # 将本地模型设置为训练模式
 
+        # 初始化每一个类的中心
+        feature_centers = torch.zeros((args.num_classes, 256), device=self.device)
+        class_counts = torch.zeros(args.num_classes, device=self.device)
+
+        # 预先遍历数据集计算每一类的特征中心
+        pre_loader = DataLoader(dataset=self.data_client, batch_size=args.batch_size_local_training, shuffle=True)
+        with torch.no_grad():  # 不需要计算梯度
+            for images, labels in pre_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                images = transform_train(images)
+                features, _ = self.local_model(images)  # TODO: 这里可以考虑用上一轮的全局模型提取特征后的特征中心
+                for i in range(features.size(0)):
+                    feature_centers[labels[i]] += features[i]
+                    class_counts[labels[i]] += 1
+
+            # 计算平均值
+            valid_classes = class_counts != 0
+            feature_centers[valid_classes] /= class_counts[valid_classes].unsqueeze(1)
+            # 为无样本的类别设置一个非常小的默认值
+            feature_centers[~valid_classes] = 1e-8
+            # torch.randn(1, feature_centers.size(1), device=self.device)
+
+            # 计算每个类别中间的最大最小距离
+            gap = torch.ones((args.num_classes, args.num_classes), device=self.device) * 1e9
+            for i in range(args.num_classes):
+                for j in range(i):
+                    dis = torch.norm(feature_centers[i] - feature_centers[j], p=2)
+                    gap[i, j] = dis
+                    gap[j, i] = dis
+            min_gap = torch.min(gap[torch.triu(torch.ones_like(gap), diagonal=1) > 0])
+            max_gap = torch.max(gap[torch.triu(torch.ones_like(gap), diagonal=1) > 0])
+            # print('class-wise minimum distance:', gap)
+            # print('min_gap:', min_gap)
+            # print('max_gap:', max_gap)
+            # print('max_gap.item():', max_gap.item())
+
+
         # 训练若干周期
-        for a in range(args.num_epochs_local_training):  # 迭代训练多个周期
-            logger.info('------------------------这是第{}个本地训练周期------------------------'.format(a))
-            f_k = torch.zeros(self.num_classes, 256, device=self.device)
-            class_count = torch.zeros(self.num_classes, device=self.device)
-            logger.info('当前本地epoch轮次的初始化f_k为：{}'.format(f_k))
-            logger.info("当前本地epoch轮次本地原型初始化为：{}".format(f_k.shape))
-            logger.info('当前本地epoch轮次的初始化计数器为：{}'.format(class_count.tolist()))
+        for _ in range(args.num_epochs_local_training):  # 迭代训练多个周期
             # 创建数据加载器，用于加载本地客户端的数据批次
             data_loader = DataLoader(dataset=self.data_client,  # 数据为本地客户端的数据
                                      batch_size=args.batch_size_local_training,  # 批次大小为输入大小
                                      shuffle=True)  # 打乱顺序以增加随机性
             for data_batch in data_loader:  # 遍历数据加载器，逐批次进行训练
-                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
-                self.optimizer.zero_grad()
-
                 images, labels = data_batch  # 获取批次中的图像和标签数据
                 images, labels = images.to(self.device), labels.to(self.device)
                 images = transform_train(images)
-                # print('这个batch内的label为：', labels.tolist())
-
                 # FedRS关键
                 hs, _ = self.local_model(images)  # 将预处理后的图像输入本地模型进行前向传播，得到预测结果
                 ws = self.local_model.classifier.weight
@@ -430,75 +432,80 @@ class Local(object):
                 # 改变张量的形状，转化为二维的
 
                 logits = cdist * hs.mm(ws.transpose(0, 1))
-
-                # 更新本地f_k
-                for i in range(self.num_classes):
-                    mask = labels == i
-                    if mask.any():
-                        f_k[i] += hs[mask].sum(0).detach()  # 累积特征和
-                        class_count[i] += mask.sum()  # 更新类计数
-
-                logger.info('经过一个batch更新后的f_k大小为：{}'.format(f_k.shape))
-                logger.info('经过一个batch更新后的f_k为：{}'.format(f_k))
-                logger.info('经过一个batch更新后的class_count大小为:{}'.format(class_count.shape))
-                logger.info('经过一个batch更新后的class_count为:{}'.format(class_count.tolist()))
-
-                # 对每个batch内进行平均f_k,避免除以0的情况
-                f_k_mean = torch.zeros_like(f_k)  # 初始化为零
-                valid_class_mask = class_count > 0
-                # print(class_count[valid_class_mask].unsqueeze(1))
-                f_k_mean[valid_class_mask] = f_k[valid_class_mask] / class_count[valid_class_mask].unsqueeze(1)
-                logger.info("经过一个batch后的f_k_mean的值为：{}".format(f_k_mean))
-
-                loss_l1 = nn.L1Loss()
                 # 计算loss
                 loss1 = self.criterion(logits, labels)
-                if (f_G == 0).all():
+                # print('loss_1:', loss1)
 
-                    loss2 = 0
-                else:
+                # TODO: 尝试引入一下这个损失值在NLL中
+                # 计算第二个损失
+                """
+                torch.pow(hs, 2)   hs的平方
+                torch.sum（） 按行相加
+                """
+                features_square = torch.sum(torch.pow(hs, 2), 1, keepdim=True)
+                centers_square = torch.sum(torch.pow(feature_centers, 2), 1, keepdim=True)
 
-                    loss2 = loss_l1(f_k_mean, f_G)  # 这个是不是有问题
-                logger.info('第一个loss为：{}'.format(loss1))
-                logger.info('第二个loss为：{}'.format(loss2))
-                loss = loss1 + loss2 * 0.5
-                logger.info('总的loss为：{}'.format(loss))
-                # print(loss.item())
+                features_into_centers = torch.matmul(hs, feature_centers.T)
+                dist_2 = features_square - 2 * features_into_centers + centers_square.T
+                dist_2 = torch.sqrt(dist_2)
+                one_hot = F.one_hot(labels, args.num_classes).to(self.device)
 
+                gap = min(max_gap.item(), 100)
+                dist_2 = dist_2 + one_hot * gap  # 类间分离性
+
+
+                loss2 = self.criterion(-dist_2, labels)
+                # print('loss_2:', loss2)
+
+                loss_decorr = self.feddecorr(hs)
+
+                loss = loss1 + loss2 * 0.01 + loss_decorr * 0.01
+                # print('总的loss为：', loss)
+
+                # 将优化器中之前积累的梯度清零，准备接收新一轮的梯度
+                self.optimizer.zero_grad()
                 # 反向传播：计算损失函数关于模型参数的梯度
                 loss.backward()
                 # 根据梯度更新模型参数，执行一步优化
                 self.optimizer.step()
 
-            f_k = f_k_mean
-            logger.info("经过一个epoch本地训练完成后的f_k大小：{}".format(f_k))
+        return self.local_model.state_dict()
 
-        return self.local_model.state_dict(), f_k
 
-def our():
-    logger = setup_logging()
+def fedlf():
+    logger = setup_logging('50-fedlf_log_file.log')
     args = args_parser()
     logger.info(
-        'imb_factor:{ib}, non_iid:{non_iid}, rs_alpha:{rs_alpha}, warm_up_epoch:{warm_up_epoch}\n'
+        'imb_factor:{ib}, non_iid:{non_iid}, rs_alpha:{rs_alpha}\n'
         'lr_local_training:{lr_local_training}\n'
         'num_rounds:{num_rounds},num_epochs_local_training:{num_epochs_local_training},batch_size_local_training:{batch_size_local_training}\n'
         'num_online_clients:{num_online_clients}\n'.format(
             ib=args.imb_factor,
             non_iid=args.non_iid_alpha,
             rs_alpha=args.rs_alpha,
-            warm_up_epoch=args.warm_up_epoch,
             lr_local_training=args.lr_local_training,
             num_rounds=args.num_rounds,
             num_epochs_local_training=args.num_epochs_local_training,
             batch_size_local_training=args.batch_size_local_training,
             num_online_clients=args.num_online_clients))
 
+    # 别忘了修改阈值
+    if args.imb_factor == 0.01:
+        logger.info("majority_threshold: {}".format(1500))
+        logger.info("minority_threshold: {}".format(200))
+    elif args.imb_factor == 0.02:
+        logger.info("majority_threshold: {}".format(1500))
+        logger.info("minority_threshold: {}".format(200))
+    elif args.imb_factor == 0.1:
+        logger.info("majority_threshold: {}".format(1500))
+        logger.info("minority_threshold: {}".format(600))
+
     random_state = np.random.RandomState(args.seed)
 
     # Load data 定义数据转化的组合，将图像转为张量，并进行归一化处理
     transform_all = transforms.Compose([
         transforms.ToTensor(),  # 将图片转为张量
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),  # 暂定不用使用creff里面的，使用Imagenet的
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])  # 对图像进行归一化处理
     # 根据命令行参数加载数据集
     if args.dataset == 'cifar10':
@@ -547,8 +554,6 @@ def our():
     ft_many = []
     ft_medium = []
     ft_few = []
-    f_G = torch.zeros(args.num_classes, 256, device=args.device)
-    logger.info('初始化f_G的大小为：{}'.format(f_G.shape))
     # 初始化空列表，用于存储重新训练后的准确率
 
     # 选择一个临时线性模型，用于申城特征和程参数
@@ -584,16 +589,12 @@ def our():
         online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
         # random_state.choice是Numoy或者python的一种生成随机数的方法，用于从指定的数组或者列表中随机选择元素
         # 这里的total_clients 是所有用户的索引列表，online_clients 代表的是在线用户的索引列表
-        logger.info('在线客户为：{}'.format(online_clients))
 
         list_clients_gradient = []  # 存储客户端的梯度信息
         list_dicts_local_params = []  # 存储每个客户端的本地参数信息
         list_nums_local_data = []  # 存储每个客户端的本地数量信息
-        f_locals = []  # 存储f_k
-
         # local training
         for client in online_clients:
-            logger.info(' 当前用户为：{}'.format(client))
 
             # FedRS 需要获取当前客户端的分布情况
             cnts = torch.tensor(original_dict_per_client[client])
@@ -618,11 +619,9 @@ def our():
             """
 
             # local update 注意这里更新只用了一部，其余在local里面
-            local_params, f_k = local_model.local_train(args, copy.deepcopy(global_params), dist, copy.deepcopy(f_G).to(args.device),logger)
+            local_params = local_model.local_train(args, copy.deepcopy(global_params), dist)
             # print(local_params)
-            f_locals.append(f_k)  # 原来定义好的空的的列表
-            logger.info('加入一个用户后的f_locals长度为：{}'.format(len(f_locals)))
-            logger.info('里面的内容为：{}'.format(f_locals))
+
             # 上面local_params 是经过迭代训练之后产生的本地模型的参数，已经更新完了
             list_dicts_local_params.append(copy.deepcopy(local_params))
             # 把每个本地模型参数的信息保存在list_dicts_local_params这个列表中
@@ -635,33 +634,6 @@ def our():
         syn_params, ft_params = global_model.feature_re_train(copy.deepcopy(fedavg_params),
                                                               args.batch_size_local_training)
         """
-
-        if r > args.warm_up_epoch:
-            if r == args.warm_up_epoch + 1:
-                # Update f_G
-                # 计算所有本地特征向量 f_k 的平均值
-                sum_f_k = torch.zeros_like(f_locals[0])  # 初始化和向量，假设所有 f_k 的维度相同
-                for f_k in f_locals:
-                    sum_f_k += f_k  # 累加所有本地特征向量
-
-                # 计算平均值，f_locals 的长度即客户端的数量
-                f_G = sum_f_k / len(f_locals)
-                logger.info('更新过后的f_G的大小为：{}'.format(f_G.shape))
-                logger.info('更新过的f_G为：{}'.format(f_G))
-
-            else:
-                # Update f_G(热身后的第二轮)
-                sim = torch.nn.CosineSimilarity(dim=1)  # 全局质心的更新方式 就是加权取平均
-                tmp = 0
-                w_sum = 0
-                for i in f_locals:
-                    sim_weight = sim(f_G, i).reshape(args.num_classes, 1)
-                    w_sum += sim_weight
-                    tmp += sim_weight * i
-                f_G = torch.div(tmp, w_sum)
-                logger.info('更新过后的f_G的大小为：{}'.format(f_G.shape))
-                logger.info('更新过的f_G为：{}'.format(f_G))
-
         # global eval
         one_re_train_acc = global_model.global_eval(fedavg_params, data_global_test, args.batch_size_test)
         re_trained_acc.append(one_re_train_acc)
@@ -671,22 +643,32 @@ def our():
         ft_many.append(many)
         ft_medium.append(medium)
         ft_few.append(few)
-        logger.info("-----------------------------------本轮epoch全局迭代结束--------------------------------")
 
         global_model.syn_model.load_state_dict(copy.deepcopy(fedavg_params))
         if r % 10 == 0:
-            print("全局精确度：", re_trained_acc)
+            logger.info("全局精确度：{}".format(re_trained_acc))
             print()
-            print("多数类的精确度：", ft_many)
+            logger.info("多数类的精确度：{}".format(ft_many))
             print()
-            print("中数类的精确度：", ft_medium)
+            logger.info("中数类的精确度：{}".format(ft_medium))
             print()
-            print("少数类的精确度：", ft_few)
+            logger.info("少数类的精确度：{}".format(ft_few))
 
-    print("全局精确度：", re_trained_acc)
+            # 构建用于t-SNE评估的数据加载器
+            test_loader = DataLoader(data_global_test, batch_size=args.batch_size_test, shuffle=False)
+
+            # 构建保存路径
+            save_dir = "Dimensionality_reduction/vsloss_feature"
+            os.makedirs(save_dir, exist_ok=True)  # 确保目录存在，不存在则创建
+            save_path = os.path.join(save_dir, f"tsne_epoch_{r}.png")
+
+            # 调用t-SNE评估函数
+            tsne_evaluation(global_model.syn_model, test_loader, save_path=save_path)
+
+    logger.info("全局精确度：{}".format(re_trained_acc))
     print()
-    print("多数类的精确度：", ft_many)
+    logger.info("多数类的精确度：{}".format(ft_many))
     print()
-    print("中数类的精确度：", ft_medium)
+    logger.info("中数类的精确度：{}".format(ft_medium))
     print()
-    print("少数类的精确度：", ft_few)
+    logger.info("少数类的精确度：{}".format(ft_few))

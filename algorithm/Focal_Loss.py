@@ -1,4 +1,3 @@
-# 以fedavg为原型。使用Focal_Loss
 from torchvision import datasets
 # datasets 模块用于，加载和使用预定义的数据集
 
@@ -60,8 +59,6 @@ import time
 
 from Dataset.param_aug import DiffAugment
 # 从Dataset包下的param_aug模块导入DiffAugment类，可能是一个实现差异化数据增强的类。
-from algorithm.FedIC import disalign
-from algorithm.FedBN import FedBN
 
 import torch
 import torch.nn.functional as F

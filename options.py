@@ -19,14 +19,11 @@ from Dataset.param_aug import ParamDiffAug
 
 def args_parser():
     parser = argparse.ArgumentParser()
-    # 构建对象
 
     path_dir = os.path.dirname(__file__)
-    # 获取当前脚本文所在的目录路径, 此时 path_dir为字符串变量
-    # parser.add_argument('--path_inaturalist', type=str, default=os.path.join(path_dir, 'data/iNaturalist18/'))
-    # use iNaturalist
 
-    # 通用设置：
+
+    # general
     parser.add_argument('--algorithm', type=str, default='fedlf', choices=['creff', 'fedavg', 'fedprox', 'fedic','fedbn','focalloss','fedrs','fedlf'],
                         help='choice your algorithm')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])

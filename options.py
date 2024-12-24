@@ -58,7 +58,7 @@ def args_parser():
     parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate',
                         help='differentiable Siamese augmentation strategy')
 
-    # our
+    # FedLF
     parser.add_argument('--lambda_2', type=float, default=0.5,help='lambda for senond loss')
     parser.add_argument('--warm_up_epoch', type=int, default=10, help='number of warm up')
     # FedIC
